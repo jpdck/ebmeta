@@ -13,3 +13,4 @@
 *.epub.tmp
 tests/output_test.epub
 scratch_*.txt
+*.epub
