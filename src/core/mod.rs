@@ -17,9 +17,9 @@ impl From<std::io::Error> for Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Error::Io(e) => write!(f, "IO error: {}", e),
-            Error::Format(s) => write!(f, "Format error: {}", s),
-            Error::Other(s) => write!(f, "Error: {}", s),
+            Error::Io(e) => write!(f, "IO error: {e}"),
+            Error::Format(s) => write!(f, "Format error: {s}"),
+            Error::Other(s) => write!(f, "Error: {s}"),
         }
     }
 }

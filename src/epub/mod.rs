@@ -1,8 +1,8 @@
-use std::path::Path;
-use std::fs::File;
-use std::io::Read;
-use crate::core::{Metadata, MetadataIo, Result, Error};
+use crate::core::{Error, Metadata, MetadataIo, Result};
 use serde::Deserialize;
+use std::fs::File;
+use std::io::{Read, Write};
+use std::path::Path;
 
 pub mod spec33;
 
@@ -41,35 +41,40 @@ impl MetadataIo for EpubMetadataManager {
         let mut archive = zip::ZipArchive::new(file).map_err(|e| Error::Other(e.to_string()))?;
 
         // 1. Read META-INF/container.xml
-        let mut container_file = archive.by_name("META-INF/container.xml")
+        let mut container_file = archive
+            .by_name("META-INF/container.xml")
             .map_err(|_| Error::Other("META-INF/container.xml not found".to_string()))?;
         let mut container_xml = String::new();
         container_file.read_to_string(&mut container_xml)?;
         drop(container_file);
 
         let container: Container = quick_xml::de::from_str(&container_xml)
-            .map_err(|e| Error::Other(format!("Failed to parse container.xml: {}", e)))?;
+            .map_err(|e| Error::Other(format!("Failed to parse container.xml: {e}")))?;
 
         // Find rootfile with media-type="application/oebps-package+xml"
-        let rootfile = container.rootfiles.rootfile.iter()
+        let rootfile = container
+            .rootfiles
+            .rootfile
+            .iter()
             .find(|rf| rf.media_type == "application/oebps-package+xml")
-            .ok_or(Error::Other("No rootfile found with media-type application/oebps-package+xml".to_string()))?;
-        
+            .ok_or(Error::Other(
+                "No rootfile found with media-type application/oebps-package+xml".to_string(),
+            ))?;
+
         let opf_path = rootfile.full_path.clone();
 
         // 2. Read OPF file
-        let mut opf_file = archive.by_name(&opf_path)
-            .map_err(|_| Error::Other(format!("OPF file {} not found in archive", opf_path)))?;
+        let mut opf_file = archive
+            .by_name(&opf_path)
+            .map_err(|_| Error::Other(format!("OPF file {opf_path} not found in archive")))?;
         let mut opf_content = String::new();
         opf_file.read_to_string(&mut opf_content)?;
         drop(opf_file);
 
         // 3. Parse and Validate OPF
-        let pkg = spec33::parse_opf(&opf_content)
-            .map_err(|e| Error::Other(e))?;
-        
-        spec33::validate_package_document(&pkg)
-            .map_err(|e| Error::Format(e))?;
+        let pkg = spec33::parse_opf(&opf_content).map_err(Error::Other)?;
+
+        spec33::validate_package_document(&pkg).map_err(Error::Format)?;
 
         // 4. Convert to generic Metadata
         let mut metadata = Metadata::default();
@@ -79,16 +84,110 @@ impl MetadataIo for EpubMetadataManager {
         if let Some(lang) = pkg.metadata.languages.first() {
             metadata.language = Some(lang.clone());
         }
-        metadata.authors = pkg.metadata.creators.clone();
-        if let Some(modified) = pkg.metadata.modified.first() {
-            metadata.published_date = Some(modified.clone());
+        metadata.authors.clone_from(&pkg.metadata.creators);
+        if let Some(desc) = pkg.metadata.descriptions.first() {
+            metadata.description = Some(desc.clone());
         }
+        if let Some(publ) = pkg.metadata.publishers.first() {
+            metadata.publisher = Some(publ.clone());
+        }
+        if let Some(date) = pkg.metadata.dates.first() {
+            metadata.published_date = Some(date.clone());
+        }
+        metadata.tags.clone_from(&pkg.metadata.subjects);
+
+        // Fallback for published_date to modified if date is missing?
+        // Or keep them separate. Metadata.published_date matches dc:date best.
+        // modified is usually internal.
 
         Ok(metadata)
     }
 
-    fn write(&self, _path: &Path, _metadata: &Metadata) -> Result<()> {
-        // Todo: Implement epub metadata writing
-        Err(Error::Other("Not implemented".to_string()))
+    fn write(&self, path: &Path, metadata: &Metadata) -> Result<()> {
+        let temp_path = path.with_extension("epub.tmp");
+
+        // Scope to ensure files are closed before rename
+        Self::perform_write(path, &temp_path, metadata)?;
+
+        // 5. Replace original
+        std::fs::rename(&temp_path, path)?;
+
+        Ok(())
+    }
+}
+
+impl EpubMetadataManager {
+    fn perform_write(path: &Path, temp_path: &Path, metadata: &Metadata) -> Result<()> {
+        let file = File::open(path)?;
+        let mut archive = zip::ZipArchive::new(file).map_err(|e| Error::Other(e.to_string()))?;
+
+        // 1. Read META-INF/container.xml
+        let mut container_file = archive
+            .by_name("META-INF/container.xml")
+            .map_err(|_| Error::Other("META-INF/container.xml not found".to_string()))?;
+        let mut container_xml = String::new();
+        container_file.read_to_string(&mut container_xml)?;
+        drop(container_file);
+
+        let container: Container = quick_xml::de::from_str(&container_xml)
+            .map_err(|e| Error::Other(format!("Failed to parse container.xml: {e}")))?;
+
+        let rootfile = container
+            .rootfiles
+            .rootfile
+            .iter()
+            .find(|rf| rf.media_type == "application/oebps-package+xml")
+            .ok_or(Error::Other(
+                "No rootfile found with media-type application/oebps-package+xml".to_string(),
+            ))?;
+
+        let opf_path = rootfile.full_path.clone();
+
+        // 2. Read and Parse OPF
+        let mut opf_file = archive
+            .by_name(&opf_path)
+            .map_err(|_| Error::Other(format!("OPF file {opf_path} not found in archive")))?;
+        let mut opf_content = String::new();
+        opf_file.read_to_string(&mut opf_content)?;
+        drop(opf_file);
+
+        let mut pkg = spec33::parse_opf(&opf_content).map_err(Error::Other)?;
+
+        // 3. Update OPF
+        pkg.update_from_metadata(metadata);
+
+        let new_opf_content = quick_xml::se::to_string(&pkg)
+            .map_err(|e| Error::Other(format!("Failed to serialize OPF: {e}")))?;
+        let new_opf_content =
+            format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n{new_opf_content}");
+
+        // 4. Create new ZIP and copy/replace
+        let temp_file = File::create(temp_path)?;
+        let mut writer = zip::ZipWriter::new(temp_file);
+
+        for i in 0..archive.len() {
+            let file = archive
+                .by_index(i)
+                .map_err(|e| Error::Other(e.to_string()))?;
+            let name = file.name().to_string();
+
+            if name == opf_path {
+                // Write new OPF
+                let options = zip::write::SimpleFileOptions::default()
+                    .compression_method(zip::CompressionMethod::Deflated)
+                    .unix_permissions(0o644);
+                writer
+                    .start_file(&name, options)
+                    .map_err(|e| Error::Other(e.to_string()))?;
+                writer.write_all(new_opf_content.as_bytes())?;
+            } else {
+                // Copy other files
+                writer
+                    .raw_copy_file(file)
+                    .map_err(|e| Error::Other(format!("Failed to copy file {name}: {e}")))?;
+            }
+        }
+        writer.finish().map_err(|e| Error::Other(e.to_string()))?;
+        Ok(())
     }
 }

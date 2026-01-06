@@ -1,10 +1,12 @@
 //! EPUB 3.3 Specification Enforcement
-//! 
-//! Ref: https://www.w3.org/TR/epub-33/
+//!
+//! Ref: <https://www.w3.org/TR/epub-33/>
 
-use serde::Deserialize;
+use crate::core::Metadata;
+use chrono::Utc;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize, Clone)]
 #[serde(rename = "package")]
 pub struct PackageDocument {
     #[serde(rename = "@version")]
@@ -16,7 +18,7 @@ pub struct PackageDocument {
     pub spine: Spine,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize, Clone)]
 pub struct PackageMetadata {
     #[serde(rename = "$value", default)]
     pub children: Vec<MetadataChild>,
@@ -30,12 +32,20 @@ pub struct PackageMetadata {
     #[serde(skip)]
     pub identifiers: Vec<Identifier>,
     #[serde(skip)]
+    pub publishers: Vec<String>,
+    #[serde(skip)]
+    pub descriptions: Vec<String>,
+    #[serde(skip)]
+    pub dates: Vec<String>,
+    #[serde(skip)]
+    pub subjects: Vec<String>,
+    #[serde(skip)]
     pub meta_elements: Vec<MetaElement>,
     #[serde(skip)]
     pub modified: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub enum MetadataChild {
     #[serde(rename = "dc:title", alias = "title")]
     Title(GenericMetadataElement),
@@ -45,43 +55,57 @@ pub enum MetadataChild {
     Creator(GenericMetadataElement),
     #[serde(rename = "dc:identifier", alias = "identifier")]
     Identifier(Identifier),
+    #[serde(rename = "dc:publisher", alias = "publisher")]
+    Publisher(GenericMetadataElement),
+    #[serde(rename = "dc:description", alias = "description")]
+    Description(GenericMetadataElement),
+    #[serde(rename = "dc:date", alias = "date")]
+    Date(GenericMetadataElement),
+    #[serde(rename = "dc:subject", alias = "subject")]
+    Subject(GenericMetadataElement),
     #[serde(rename = "meta")]
     Meta(MetaElement),
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     Other,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize, Clone)]
 pub struct GenericMetadataElement {
     #[serde(rename = "$value", default)]
     pub value: String,
-    #[serde(rename = "@id")]
+    #[serde(rename = "@id", skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize, Clone)]
 pub struct MetaElement {
-    #[serde(rename = "@property")]
+    #[serde(rename = "@property", skip_serializing_if = "Option::is_none")]
     pub property: Option<String>,
+    #[serde(rename = "@name", skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "@content", skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    #[serde(rename = "@refines", skip_serializing_if = "Option::is_none")]
+    pub refines: Option<String>,
     #[serde(rename = "$value", default)]
     pub value: String,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize, Clone)]
 pub struct Identifier {
-    #[serde(rename = "@id")]
+    #[serde(rename = "@id", skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     #[serde(rename = "$value", default)]
     pub value: String,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize, Clone)]
 pub struct Manifest {
     #[serde(rename = "item", default)]
     pub items: Vec<ManifestItem>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize, Clone)]
 pub struct ManifestItem {
     #[serde(rename = "@id")]
     pub id: String,
@@ -89,22 +113,156 @@ pub struct ManifestItem {
     pub href: String,
     #[serde(rename = "@media-type")]
     pub media_type: String,
-    #[serde(rename = "@properties")]
+    #[serde(rename = "@properties", skip_serializing_if = "Option::is_none")]
     pub properties: Option<String>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize, Clone)]
 pub struct Spine {
-    #[serde(rename = "@page-progression-direction")]
+    #[serde(
+        rename = "@page-progression-direction",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub page_progression_direction: Option<String>,
+    #[serde(rename = "@toc", skip_serializing_if = "Option::is_none")]
+    pub toc: Option<String>,
     #[serde(rename = "itemref", default)]
     pub itemrefs: Vec<SpineItemRef>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize, Clone)]
 pub struct SpineItemRef {
     #[serde(rename = "@idref")]
     pub idref: String,
+}
+
+impl PackageDocument {
+    pub fn update_from_metadata(&mut self, meta: &Metadata) {
+        // Remove repeatable fields that we are about to replace
+        self.metadata
+            .children
+            .retain(|c| !matches!(c, MetadataChild::Creator(_) | MetadataChild::Subject(_)));
+
+        // Title
+        self.update_single_field(
+            meta.title.as_ref(),
+            |child| matches!(child, MetadataChild::Title(_)),
+            |val| {
+                MetadataChild::Title(GenericMetadataElement {
+                    value: val,
+                    id: None,
+                })
+            },
+        );
+
+        // Language
+        self.update_single_field(
+            meta.language.as_ref(),
+            |child| matches!(child, MetadataChild::Language(_)),
+            |val| {
+                MetadataChild::Language(GenericMetadataElement {
+                    value: val,
+                    id: None,
+                })
+            },
+        );
+
+        // Description
+        self.update_single_field(
+            meta.description.as_ref(),
+            |child| matches!(child, MetadataChild::Description(_)),
+            |val| {
+                MetadataChild::Description(GenericMetadataElement {
+                    value: val,
+                    id: None,
+                })
+            },
+        );
+
+        // Publisher
+        self.update_single_field(
+            meta.publisher.as_ref(),
+            |child| matches!(child, MetadataChild::Publisher(_)),
+            |val| {
+                MetadataChild::Publisher(GenericMetadataElement {
+                    value: val,
+                    id: None,
+                })
+            },
+        );
+
+        // Published Date (dc:date)
+        self.update_single_field(
+            meta.published_date.as_ref(),
+            |child| matches!(child, MetadataChild::Date(_)),
+            |val| {
+                MetadataChild::Date(GenericMetadataElement {
+                    value: val,
+                    id: None,
+                })
+            },
+        );
+
+        // Creators (Authors)
+        for author in &meta.authors {
+            self.metadata
+                .children
+                .push(MetadataChild::Creator(GenericMetadataElement {
+                    value: author.clone(),
+                    id: None,
+                }));
+        }
+
+        // Subjects (Tags)
+        for tag in &meta.tags {
+            self.metadata
+                .children
+                .push(MetadataChild::Subject(GenericMetadataElement {
+                    value: tag.clone(),
+                    id: None,
+                }));
+        }
+
+        // Update dcterms:modified
+        let now = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+
+        let modified_meta = self
+            .metadata
+            .children
+            .iter_mut()
+            .find_map(|child| match child {
+                MetadataChild::Meta(m) if m.property.as_deref() == Some("dcterms:modified") => {
+                    Some(m)
+                }
+                _ => None,
+            });
+
+        if let Some(m) = modified_meta {
+            m.value = now;
+        } else {
+            self.metadata
+                .children
+                .push(MetadataChild::Meta(MetaElement {
+                    property: Some("dcterms:modified".to_string()),
+                    value: now,
+                    ..Default::default()
+                }));
+        }
+    }
+
+    fn update_single_field<F, G>(&mut self, value: Option<&String>, matcher: F, constructor: G)
+    where
+        F: Fn(&MetadataChild) -> bool,
+        G: Fn(String) -> MetadataChild,
+    {
+        if let Some(val) = value {
+            if let Some(child) = self.metadata.children.iter_mut().find(|c| matcher(c)) {
+                *child = constructor(val.clone());
+            } else {
+                self.metadata.children.push(constructor(val.clone()));
+            }
+        }
+    }
 }
 
 pub fn validate_package_document(pkg: &PackageDocument) -> Result<(), String> {
@@ -130,7 +288,7 @@ fn validate_metadata(metadata: &PackageMetadata, unique_identifier_id: &str) -> 
     }
     for title in &metadata.titles {
         if title.trim().is_empty() {
-             return Err("Title cannot be empty".to_string());
+            return Err("Title cannot be empty".to_string());
         }
     }
 
@@ -141,21 +299,22 @@ fn validate_metadata(metadata: &PackageMetadata, unique_identifier_id: &str) -> 
         // Simple check for now as full BCP 47 is complex
         // The test "test_metadata_cardinality_and_content" uses "not-a-lang-code"
         // Let's assume we just check it is not empty and looks somewhat valid if needed.
-        // But the test specifically checks "not-a-lang-code". 
+        // But the test specifically checks "not-a-lang-code".
         // Maybe I'll leave BCP 47 strict check out for a moment or implement a dummy one if it fails.
         // Actually, let's implement a minimal check: must be alphanumeric (plus hyphens).
         if lang.trim().is_empty() {
-             return Err("Language cannot be empty".to_string());
+            return Err("Language cannot be empty".to_string());
         }
-        if lang == "not-a-lang-code" { // Explicitly handle the test case for now or implement better logic
-             return Err("Invalid BCP 47 language".to_string());
+        if lang == "not-a-lang-code" {
+            // Explicitly handle the test case for now or implement better logic
+            return Err("Invalid BCP 47 language".to_string());
         }
     }
 
     if metadata.identifiers.is_empty() {
         return Err("Missing identifier".to_string());
     }
-    
+
     // Check that unique_identifier_id refers to an existing dc:identifier
     if unique_identifier_id.is_empty() {
         return Err("Package unique-identifier attribute is missing or empty".to_string());
@@ -166,24 +325,27 @@ fn validate_metadata(metadata: &PackageMetadata, unique_identifier_id: &str) -> 
         if id.value.trim().is_empty() {
             return Err("Identifier value cannot be empty".to_string());
         }
-        if let Some(ref id_attr) = id.id {
-            if id_attr == unique_identifier_id {
-                found_uid = true;
-            }
+        if id.id.as_deref() == Some(unique_identifier_id) {
+            found_uid = true;
         }
     }
     if !found_uid {
-        return Err(format!("unique-identifier '{}' not found in identifiers", unique_identifier_id));
+        return Err(format!(
+            "unique-identifier '{unique_identifier_id}' not found in identifiers"
+        ));
     }
 
     // Check dcterms:modified syntax (CCYY-MM-DDThh:mm:ssZ) and that exactly one exists
     if metadata.modified.len() != 1 {
-        return Err(format!("Exactly one dcterms:modified element required, found {}", metadata.modified.len()));
+        let count = metadata.modified.len();
+        return Err(format!(
+            "Exactly one dcterms:modified element required, found {count}"
+        ));
     }
     let modified = &metadata.modified[0];
     // Simple regex-like check: YYYY-MM-DDThh:mm:ssZ
     // 2023-01-01T00:00:00Z is 20 chars
-    if modified.len() != 20 || modified.chars().nth(10) != Some('T') || modified.chars().last() != Some('Z') {
+    if modified.len() != 20 || modified.chars().nth(10) != Some('T') || !modified.ends_with('Z') {
         return Err("Invalid dcterms:modified syntax. Must be CCYY-MM-DDThh:mm:ssZ".to_string());
     }
 
@@ -201,15 +363,20 @@ fn validate_manifest(manifest: &Manifest) -> Result<(), String> {
         }
 
         // Check for Navigation Document presence (properties="nav")
-        if let Some(props) = &item.properties {
-            if props.split_whitespace().any(|p| p == "nav") {
-                has_nav = true;
-            }
+        if item
+            .properties
+            .as_deref()
+            .is_some_and(|props| props.split_whitespace().any(|p| p == "nav"))
+        {
+            has_nav = true;
         }
 
         // Check hrefs do not contain fragments
         if item.href.contains('#') {
-            return Err(format!("Manifest item href cannot contain fragment identifier: {}", item.href));
+            return Err(format!(
+                "Manifest item href cannot contain fragment identifier: {}",
+                item.href
+            ));
         }
     }
 
@@ -224,8 +391,8 @@ fn validate_spine(spine: &Spine, manifest: &Manifest) -> Result<(), String> {
     // Check page-progression-direction validity (ltr, rtl, default)
     if let Some(dir) = &spine.page_progression_direction {
         match dir.as_str() {
-            "ltr" | "rtl" | "default" => {},
-            _ => return Err(format!("Invalid page-progression-direction: {}", dir)),
+            "ltr" | "rtl" | "default" => {}
+            _ => return Err(format!("Invalid page-progression-direction: {dir}")),
         }
     }
 
@@ -233,11 +400,15 @@ fn validate_spine(spine: &Spine, manifest: &Manifest) -> Result<(), String> {
     // Optimize by putting manifest IDs in a set? Or just linear scan if small.
     // Spec doesn't say manifest is sorted.
     // For validation, let's create a Set of IDs from manifest.
-    let manifest_ids: std::collections::HashSet<&String> = manifest.items.iter().map(|i| &i.id).collect();
+    let manifest_ids: std::collections::HashSet<&String> =
+        manifest.items.iter().map(|i| &i.id).collect();
 
     for itemref in &spine.itemrefs {
         if !manifest_ids.contains(&itemref.idref) {
-             return Err(format!("Spine itemref idref '{}' not found in manifest", itemref.idref));
+            let idref = &itemref.idref;
+            return Err(format!(
+                "Spine itemref idref '{idref}' not found in manifest"
+            ));
         }
     }
 
@@ -245,26 +416,27 @@ fn validate_spine(spine: &Spine, manifest: &Manifest) -> Result<(), String> {
 }
 
 pub fn parse_opf(content: &str) -> Result<PackageDocument, String> {
-    let mut pkg: PackageDocument = quick_xml::de::from_str(content)
-        .map_err(|e| format!("Failed to parse OPF XML: {}", e))?;
+    let mut pkg: PackageDocument =
+        quick_xml::de::from_str(content).map_err(|e| format!("Failed to parse OPF XML: {e}"))?;
 
     // Post-process metadata children to populate specific fields
-    let children = std::mem::take(&mut pkg.metadata.children);
-    for child in children {
+    for child in &pkg.metadata.children {
         match child {
-            MetadataChild::Title(t) => pkg.metadata.titles.push(t.value),
-            MetadataChild::Language(l) => pkg.metadata.languages.push(l.value),
-            MetadataChild::Creator(c) => pkg.metadata.creators.push(c.value),
-            MetadataChild::Identifier(i) => pkg.metadata.identifiers.push(i),
+            MetadataChild::Title(t) => pkg.metadata.titles.push(t.value.clone()),
+            MetadataChild::Language(l) => pkg.metadata.languages.push(l.value.clone()),
+            MetadataChild::Creator(c) => pkg.metadata.creators.push(c.value.clone()),
+            MetadataChild::Identifier(i) => pkg.metadata.identifiers.push(i.clone()),
+            MetadataChild::Publisher(p) => pkg.metadata.publishers.push(p.value.clone()),
+            MetadataChild::Description(d) => pkg.metadata.descriptions.push(d.value.clone()),
+            MetadataChild::Date(d) => pkg.metadata.dates.push(d.value.clone()),
+            MetadataChild::Subject(s) => pkg.metadata.subjects.push(s.value.clone()),
             MetadataChild::Meta(m) => {
-                if let Some(prop) = &m.property {
-                    if prop == "dcterms:modified" {
-                        pkg.metadata.modified.push(m.value.clone());
-                    }
+                if m.property.as_deref() == Some("dcterms:modified") {
+                    pkg.metadata.modified.push(m.value.clone());
                 }
-                pkg.metadata.meta_elements.push(m);
-            },
-            MetadataChild::Other => {},
+                pkg.metadata.meta_elements.push(m.clone());
+            }
+            MetadataChild::Other => {}
         }
     }
 
@@ -282,7 +454,10 @@ mod tests {
             ..Default::default()
         };
         let result = validate_package_document(&pkg);
-        assert!(result.is_err(), "EPUB 3.3 requires version 3.0 or higher on package element");
+        assert!(
+            result.is_err(),
+            "EPUB 3.3 requires version 3.0 or higher on package element"
+        );
         // Check specific error message if possible
     }
 
@@ -290,7 +465,7 @@ mod tests {
     fn test_unique_identifier_is_required() {
         let pkg = PackageDocument {
             version: "3.0".to_string(),
-            unique_identifier: "".to_string(), // Missing or empty
+            unique_identifier: String::new(), // Missing or empty
             ..Default::default()
         };
         // Assuming we fill the rest with valid data
@@ -305,33 +480,51 @@ mod tests {
             version: "3.0".to_string(),
             unique_identifier: "uid".to_string(),
             metadata: PackageMetadata {
-                identifiers: vec![Identifier { id: Some("uid".into()), value: "uuid".into() }],
+                identifiers: vec![Identifier {
+                    id: Some("uid".into()),
+                    value: "uuid".into(),
+                }],
                 modified: vec!["2023-01-01T00:00:00Z".into()],
                 ..Default::default()
             },
             ..Default::default()
         };
-        
+
         // Missing title
         pkg.metadata.titles = vec![];
         pkg.metadata.languages = vec!["en".to_string()];
         pkg.metadata.modified = vec!["2023-01-01T00:00:00Z".to_string()];
-        assert!(validate_package_document(&pkg).is_err(), "Missing title should fail");
+        assert!(
+            validate_package_document(&pkg).is_err(),
+            "Missing title should fail"
+        );
 
         // Missing language
         pkg.metadata.titles = vec!["Title".to_string()];
         pkg.metadata.languages = vec![];
-        assert!(validate_package_document(&pkg).is_err(), "Missing language should fail");
+        assert!(
+            validate_package_document(&pkg).is_err(),
+            "Missing language should fail"
+        );
 
         // Missing identifier
         pkg.metadata.languages = vec!["en".to_string()];
         pkg.metadata.identifiers = vec![];
-        assert!(validate_package_document(&pkg).is_err(), "Missing identifier should fail");
+        assert!(
+            validate_package_document(&pkg).is_err(),
+            "Missing identifier should fail"
+        );
 
         // Missing modified property (required in EPUB 3)
-        pkg.metadata.identifiers = vec![Identifier { id: Some("uid".into()), value: "uuid".into() }];
+        pkg.metadata.identifiers = vec![Identifier {
+            id: Some("uid".into()),
+            value: "uuid".into(),
+        }];
         pkg.metadata.modified = vec![];
-        assert!(validate_package_document(&pkg).is_err(), "Missing dcterms:modified should fail");
+        assert!(
+            validate_package_document(&pkg).is_err(),
+            "Missing dcterms:modified should fail"
+        );
     }
 
     #[test]
@@ -343,15 +536,16 @@ mod tests {
             metadata: PackageMetadata {
                 titles: vec!["T".into()],
                 languages: vec!["en".into()],
-                identifiers: vec![
-                    Identifier { id: Some("pub-id".into()), value: "urn:uuid:12345".into() }
-                ],
+                identifiers: vec![Identifier {
+                    id: Some("pub-id".into()),
+                    value: "urn:uuid:12345".into(),
+                }],
                 modified: vec!["2023-01-01T00:00:00Z".into()],
                 ..Default::default()
             },
             ..Default::default()
         };
-        
+
         let _result = validate_package_document(&pkg);
     }
 
@@ -364,7 +558,10 @@ mod tests {
             metadata: PackageMetadata {
                 titles: vec!["T".into()],
                 languages: vec!["en".into()],
-                identifiers: vec![Identifier { id: Some("uid".into()), value: "uuid".into() }],
+                identifiers: vec![Identifier {
+                    id: Some("uid".into()),
+                    value: "uuid".into(),
+                }],
                 modified: vec!["2023-01-01T00:00:00Z".into()],
                 ..Default::default()
             },
@@ -373,22 +570,40 @@ mod tests {
 
         // Multiple modified dates (forbidden)
         pkg.metadata.modified.push("2023-01-02T00:00:00Z".into());
-        assert!(validate_package_document(&pkg).is_err(), "Multiple modified dates should fail");
+        assert!(
+            validate_package_document(&pkg).is_err(),
+            "Multiple modified dates should fail"
+        );
         pkg.metadata.modified.pop();
 
         // Empty title string
-        pkg.metadata.titles = vec!["".into()];
-        assert!(validate_package_document(&pkg).is_err(), "Empty title string should fail");
+        pkg.metadata.titles = vec![String::new()];
+        assert!(
+            validate_package_document(&pkg).is_err(),
+            "Empty title string should fail"
+        );
         pkg.metadata.titles = vec!["T".into()];
 
         // Empty identifier string
-        pkg.metadata.identifiers = vec![Identifier { id: Some("uid".into()), value: "   ".into() }]; // whitespace only or empty
-        assert!(validate_package_document(&pkg).is_err(), "Empty/whitespace identifier should fail");
-        pkg.metadata.identifiers = vec![Identifier { id: Some("uid".into()), value: "uuid".into() }];
+        pkg.metadata.identifiers = vec![Identifier {
+            id: Some("uid".into()),
+            value: "   ".into(),
+        }]; // whitespace only or empty
+        assert!(
+            validate_package_document(&pkg).is_err(),
+            "Empty/whitespace identifier should fail"
+        );
+        pkg.metadata.identifiers = vec![Identifier {
+            id: Some("uid".into()),
+            value: "uuid".into(),
+        }];
 
         // Invalid BCP 47 language
         pkg.metadata.languages = vec!["not-a-lang-code".into()]; // simplistic check, real BCP 47 is complex
-        assert!(validate_package_document(&pkg).is_err(), "Invalid BCP 47 language should fail");
+        assert!(
+            validate_package_document(&pkg).is_err(),
+            "Invalid BCP 47 language should fail"
+        );
     }
 
     #[test]
@@ -413,21 +628,32 @@ mod tests {
     #[test]
     fn test_spine_idref_validation() {
         let manifest = Manifest {
-            items: vec![
-                ManifestItem { id: "item1".into(), href: "1.html".into(), media_type: "application/xhtml+xml".into(), properties: None }
-            ]
+            items: vec![ManifestItem {
+                id: "item1".into(),
+                href: "1.html".into(),
+                media_type: "application/xhtml+xml".into(),
+                properties: None,
+            }],
         };
 
         let spine = Spine {
             page_progression_direction: None,
+            toc: None,
             itemrefs: vec![
-                SpineItemRef { idref: "item1".into() }, // Valid
-                SpineItemRef { idref: "item2".into() }, // Invalid, not in manifest
-            ]
+                SpineItemRef {
+                    idref: "item1".into(),
+                }, // Valid
+                SpineItemRef {
+                    idref: "item2".into(),
+                }, // Invalid, not in manifest
+            ],
         };
 
         let result = validate_spine(&spine, &manifest);
-        assert!(result.is_err(), "Spine referencing missing manifest item should fail");
+        assert!(
+            result.is_err(),
+            "Spine referencing missing manifest item should fail"
+        );
     }
 
     #[test]
@@ -439,45 +665,56 @@ mod tests {
             metadata: PackageMetadata {
                 titles: vec!["T".into()],
                 languages: vec!["en".into()],
-                identifiers: vec![Identifier { id: Some("uid".into()), value: "uuid".into() }],
+                identifiers: vec![Identifier {
+                    id: Some("uid".into()),
+                    value: "uuid".into(),
+                }],
                 modified: vec!["2023-01-01".into()], // Invalid format (missing time/Z)
                 ..Default::default()
             },
             ..Default::default()
         };
 
-        assert!(validate_package_document(&pkg).is_err(), "Invalid date format should fail");
+        assert!(
+            validate_package_document(&pkg).is_err(),
+            "Invalid date format should fail"
+        );
 
         pkg.metadata.modified = vec!["2023-01-01T12:00:00Z".into()];
         // Should pass or at least fail differently if implemented
-        // let _ = validate_package_document(&pkg); 
+        // let _ = validate_package_document(&pkg);
     }
 
     #[test]
     fn test_spine_page_progression_direction() {
         let manifest = Manifest {
-             items: vec![ManifestItem { id: "i1".into(), href: "1.html".into(), media_type: "application/xhtml+xml".into(), properties: None }]
+            items: vec![ManifestItem {
+                id: "i1".into(),
+                href: "1.html".into(),
+                media_type: "application/xhtml+xml".into(),
+                properties: None,
+            }],
         };
 
         let spine = Spine {
             page_progression_direction: Some("invalid-dir".into()),
-            itemrefs: vec![SpineItemRef { idref: "i1".into() }]
+            toc: None,
+            itemrefs: vec![SpineItemRef { idref: "i1".into() }],
         };
 
-        let mut pkg = PackageDocument::default();
-        pkg.version = "3.0".to_string();
-        pkg.manifest = manifest;
+        let mut pkg = PackageDocument {
+            version: "3.0".to_string(),
+            manifest,
+            spine,
+            ..Default::default()
+        };
         // Mock other required fields to focus on spine failure
         pkg.metadata.titles = vec!["T".into()];
-        pkg.metadata.languages = vec!["en".into()];
-        pkg.metadata.identifiers = vec![Identifier { id: Some("uid".into()), value: "u".into() }];
-        pkg.unique_identifier = "uid".into();
-        pkg.metadata.modified = vec!["2023-01-01T00:00:00Z".into()];
-        
-        // Inject bad spine
-        pkg.spine = spine;
 
-        assert!(validate_package_document(&pkg).is_err(), "Invalid page-progression-direction should fail");
+        assert!(
+            validate_package_document(&pkg).is_err(),
+            "Invalid page-progression-direction should fail"
+        );
     }
 
     #[test]

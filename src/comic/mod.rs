@@ -1,5 +1,5 @@
+use crate::core::{Error, Metadata, MetadataIo, Result};
 use std::path::Path;
-use crate::core::{Metadata, MetadataIo, Result, Error};
 
 pub struct ComicMetadataManager;
 
