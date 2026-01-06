@@ -1,1 +1,15 @@
 /target
+
+# macOS
+.DS_Store
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Project specific
+*.epub.tmp
+tests/output_test.epub
+scratch_*.txt
