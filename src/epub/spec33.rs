@@ -6,23 +6,35 @@ use crate::core::Metadata;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
+/// Represents the EPUB 3.3 Package Document (usually `content.opf`).
+///
+/// The Package Document is the principal metadata and resource listing for the publication.
 #[derive(Debug, Default, Deserialize, Serialize, Clone)]
 #[serde(rename = "package")]
 pub struct PackageDocument {
+    /// EPUB version (must be "3.0" for this implementation).
     #[serde(rename = "@version")]
     pub version: String,
+    /// `IDref` pointing to the unique identifier in the metadata section.
     #[serde(rename = "@unique-identifier")]
     pub unique_identifier: String,
+    /// Publication metadata (title, author, etc.).
     pub metadata: PackageMetadata,
+    /// List of all resources (files) in the EPUB.
     pub manifest: Manifest,
+    /// Reading order of the publication.
     pub spine: Spine,
 }
 
+/// Contains the metadata elements of the Package Document.
 #[derive(Debug, Default, Deserialize, Serialize, Clone)]
 pub struct PackageMetadata {
+    /// Ordered list of all metadata children (dc:title, meta, etc.).
     #[serde(rename = "$value", default)]
     pub children: Vec<MetadataChild>,
 
+    // Fields below are explicitly extracted for easier access during parsing,
+    // or populated during validation/parsing. They are NOT serialized directly.
     #[serde(skip)]
     pub titles: Vec<String>,
     #[serde(skip)]
@@ -45,6 +57,9 @@ pub struct PackageMetadata {
     pub modified: Vec<String>,
 }
 
+/// Enum representing any valid child of the `<metadata>` element.
+///
+/// Handles both Dublin Core (dc:) elements and EPUB 3 specific `<meta>` elements.
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub enum MetadataChild {
     #[serde(rename = "dc:title", alias = "title")]
@@ -65,10 +80,12 @@ pub enum MetadataChild {
     Subject(GenericMetadataElement),
     #[serde(rename = "meta")]
     Meta(MetaElement),
+    /// Catch-all for unknown or unsupported metadata elements.
     #[serde(other, skip_serializing)]
     Other,
 }
 
+/// A generic simple Dublin Core element (e.g., `<dc:title>Value</dc:title>`).
 #[derive(Debug, Default, Deserialize, Serialize, Clone)]
 pub struct GenericMetadataElement {
     #[serde(rename = "$value", default)]
@@ -77,6 +94,9 @@ pub struct GenericMetadataElement {
     pub id: Option<String>,
 }
 
+/// Represents an EPUB 3 `<meta>` element.
+///
+/// Can represent property/value pairs or refinement of other elements.
 #[derive(Debug, Default, Deserialize, Serialize, Clone)]
 pub struct MetaElement {
     #[serde(rename = "@property", skip_serializing_if = "Option::is_none")]
@@ -91,6 +111,7 @@ pub struct MetaElement {
     pub value: String,
 }
 
+/// Represents a `<dc:identifier>` element.
 #[derive(Debug, Default, Deserialize, Serialize, Clone)]
 pub struct Identifier {
     #[serde(rename = "@id", skip_serializing_if = "Option::is_none")]
@@ -99,12 +120,14 @@ pub struct Identifier {
     pub value: String,
 }
 
+/// The Manifest lists all files (resources) that make up the EPUB.
 #[derive(Debug, Default, Deserialize, Serialize, Clone)]
 pub struct Manifest {
     #[serde(rename = "item", default)]
     pub items: Vec<ManifestItem>,
 }
 
+/// A single item (file) in the Manifest.
 #[derive(Debug, Default, Deserialize, Serialize, Clone)]
 pub struct ManifestItem {
     #[serde(rename = "@id")]
@@ -117,6 +140,7 @@ pub struct ManifestItem {
     pub properties: Option<String>,
 }
 
+/// The Spine defines the linear reading order of the EPUB.
 #[derive(Debug, Default, Deserialize, Serialize, Clone)]
 pub struct Spine {
     #[serde(
@@ -130,6 +154,7 @@ pub struct Spine {
     pub itemrefs: Vec<SpineItemRef>,
 }
 
+/// Reference to an item in the Manifest that is part of the reading order.
 #[derive(Debug, Default, Deserialize, Serialize, Clone)]
 pub struct SpineItemRef {
     #[serde(rename = "@idref")]
@@ -137,6 +162,14 @@ pub struct SpineItemRef {
 }
 
 impl PackageDocument {
+    /// Updates the Package Document with values from a generic `Metadata` struct.
+    ///
+    /// This method:
+    /// 1. Replaces standard fields (Title, Language, Description, Publisher, Date).
+    /// 2. Appends new Creators (Authors) and Subjects (Tags).
+    /// 3. Updates `dcterms:modified` to the current UTC time.
+    ///
+    /// Existing metadata that isn't overwritten is preserved.
     pub fn update_from_metadata(&mut self, meta: &Metadata) {
         // Remove repeatable fields that we are about to replace
         self.metadata
@@ -265,6 +298,20 @@ impl PackageDocument {
     }
 }
 
+/// Validates the Package Document against core EPUB 3.3 rules.
+///
+/// Checks:
+/// * Version is 3.0.
+/// * Required metadata exists (title, language, identifier, modified).
+/// * Unique identifier resolution.
+/// * Manifest integrity (no duplicate IDs, no fragments in hrefs).
+/// * Spine integrity (all idrefs exist in manifest).
+///
+/// # Errors
+///
+/// Returns an error if any of the EPUB 3.3 validation rules are violated.
+/// This includes missing required metadata, invalid attribute values, or
+/// structural inconsistencies between the manifest and spine.
 pub fn validate_package_document(pkg: &PackageDocument) -> Result<(), String> {
     validate_version(&pkg.version)?;
     validate_metadata(&pkg.metadata, &pkg.unique_identifier)?;
@@ -415,6 +462,15 @@ fn validate_spine(spine: &Spine, manifest: &Manifest) -> Result<(), String> {
     Ok(())
 }
 
+/// Parses the OPF content from an XML string.
+///
+/// This also post-processes the `children` vector to populate the specific
+/// fields in `PackageMetadata` (like `titles`, `creators`, etc.) for easier consumption.
+///
+/// # Errors
+///
+/// Returns an error string if the XML content is invalid or cannot be deserialized
+/// into the `PackageDocument` structure.
 pub fn parse_opf(content: &str) -> Result<PackageDocument, String> {
     let mut pkg: PackageDocument =
         quick_xml::de::from_str(content).map_err(|e| format!("Failed to parse OPF XML: {e}"))?;

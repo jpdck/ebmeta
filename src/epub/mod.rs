@@ -25,9 +25,15 @@ struct RootFile {
     media_type: String,
 }
 
+/// Handles reading and writing metadata for EPUB files.
+///
+/// This struct implements the `MetadataIo` trait, allowing it to interact with
+/// standard EPUB 3.3 files. It handles the details of the Open Container Format (OCF)
+/// to locate the Package Document (OPF), and then parses/modifies the OPF file.
 pub struct EpubMetadataManager;
 
 impl MetadataIo for EpubMetadataManager {
+    /// Checks if the file path has an .epub extension.
     fn can_handle(&self, path: &Path) -> bool {
         if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
             matches!(ext.to_lowercase().as_str(), "epub")
@@ -36,6 +42,21 @@ impl MetadataIo for EpubMetadataManager {
         }
     }
 
+    /// Reads metadata from an EPUB file.
+    ///
+    /// This method:
+    /// 1. Opens the EPUB (ZIP) archive.
+    /// 2. Reads `META-INF/container.xml` to find the rootfile (OPF).
+    /// 3. Parses the OPF file using EPUB 3.3 strict validation.
+    /// 4. Maps the standard EPUB metadata (DC terms) to the generic `Metadata` struct.
+    ///
+    /// # Errors
+    ///
+    /// Returns an `Error` if:
+    /// * The file cannot be opened or is not a valid ZIP archive.
+    /// * `META-INF/container.xml` is missing or invalid.
+    /// * The rootfile (OPF) cannot be located or read.
+    /// * The OPF file content is invalid or fails EPUB 3.3 validation.
     fn read(&self, path: &Path) -> Result<Metadata> {
         let file = File::open(path)?;
         let mut archive = zip::ZipArchive::new(file).map_err(|e| Error::Other(e.to_string()))?;
@@ -103,6 +124,23 @@ impl MetadataIo for EpubMetadataManager {
         Ok(metadata)
     }
 
+    /// Writes metadata to an EPUB file.
+    ///
+    /// This process is atomic:
+    /// 1. A temporary file (`.epub.tmp`) is created.
+    /// 2. All content from the original EPUB is copied to the temporary file,
+    ///    except for the OPF file which is regenerated with the new metadata.
+    /// 3. The file compression settings are preserved where possible (defaulting to Deflate).
+    /// 4. On success, the temporary file replaces the original.
+    ///
+    /// # Errors
+    ///
+    /// Returns an `Error` if:
+    /// * The input file cannot be opened or parsed.
+    /// * The temporary file cannot be created or written to.
+    /// * `META-INF/container.xml` or the OPF file is missing.
+    /// * Serialization of the updated OPF fails.
+    /// * Renaming the temporary file to the original filename fails.
     fn write(&self, path: &Path, metadata: &Metadata) -> Result<()> {
         let temp_path = path.with_extension("epub.tmp");
 
@@ -117,6 +155,14 @@ impl MetadataIo for EpubMetadataManager {
 }
 
 impl EpubMetadataManager {
+    /// Helper to perform the read-modify-write cycle into a temporary file.
+    ///
+    /// This separates the file operations from the final atomic rename.
+    ///
+    /// # Errors
+    ///
+    /// Returns an `Error` if any step of reading the original EPUB, updating the metadata,
+    /// or writing to the temporary file fails.
     fn perform_write(path: &Path, temp_path: &Path, metadata: &Metadata) -> Result<()> {
         let file = File::open(path)?;
         let mut archive = zip::ZipArchive::new(file).map_err(|e| Error::Other(e.to_string()))?;
