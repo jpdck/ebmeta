@@ -40,6 +40,7 @@ pub struct Metadata {
     pub publisher: Option<String>,
     pub language: Option<String>,
     pub published_date: Option<String>,
+    pub isbn: Option<String>,
     pub duration_seconds: Option<u64>,
     pub tags: Vec<String>,
     pub cover_image: Option<CoverImage>,

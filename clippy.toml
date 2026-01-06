@@ -6,7 +6,7 @@ max-fn-params-bools = 5
 # pedantic-lints = "warn" (Moved to Cargo.toml or command line args)
 
 # Restriction lints (strict safety/clarity)
-disallowed-macros = ["println", "dbg", "eprintln"]  # Force proper logging
+disallowed-macros = ["std::println", "std::dbg", "std::eprintln"]  # Force proper logging
 disallowed-methods = [
     "std::env::set_var",  # Unsafe in multithreaded contexts
 ]

@@ -279,6 +279,11 @@ impl PackageDocument {
                 }));
         }
 
+        // ISBN
+        if let Some(isbn) = &meta.isbn {
+            self.update_isbn(isbn);
+        }
+
         // Update dcterms:modified
         let now = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
@@ -384,6 +389,29 @@ impl PackageDocument {
             } else {
                 self.metadata.children.push(constructor(val.clone()));
             }
+        }
+    }
+
+    fn update_isbn(&mut self, isbn: &str) {
+        let isbn_urn = format!("urn:isbn:{isbn}");
+        let found = self.metadata.children.iter_mut().any(|child| {
+            if let MetadataChild::Identifier(id) = child
+                && id.value.to_lowercase().starts_with("urn:isbn:")
+            {
+                id.value.clone_from(&isbn_urn);
+                true
+            } else {
+                false
+            }
+        });
+
+        if !found {
+            self.metadata
+                .children
+                .push(MetadataChild::Identifier(Identifier {
+                    value: isbn_urn,
+                    id: Some(format!("isbn-{}", Utc::now().timestamp())),
+                }));
         }
     }
 }

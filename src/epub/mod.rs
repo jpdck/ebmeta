@@ -117,6 +117,17 @@ impl MetadataIo for EpubMetadataManager {
         }
         metadata.tags.clone_from(&pkg.metadata.subjects);
 
+        // Extract ISBN
+        if let Some(isbn) = pkg.metadata.identifiers.iter().find_map(|id| {
+            if id.value.to_lowercase().starts_with("urn:isbn:") {
+                Some(id.value[9..].to_string())
+            } else {
+                None
+            }
+        }) {
+            metadata.isbn = Some(isbn);
+        }
+
         // Fallback for published_date to modified if date is missing?
         // Or keep them separate. Metadata.published_date matches dc:date best.
         // modified is usually internal.
