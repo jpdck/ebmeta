@@ -42,6 +42,13 @@ pub struct Metadata {
     pub published_date: Option<String>,
     pub duration_seconds: Option<u64>,
     pub tags: Vec<String>,
+    pub cover_image: Option<CoverImage>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CoverImage {
+    pub content: Vec<u8>,
+    pub media_type: String,
 }
 
 /// Interface for reading and writing metadata from/to files.

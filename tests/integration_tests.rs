@@ -61,3 +61,63 @@ fn test_write_epub_metadata() {
     // Cleanup
     let _ = std::fs::remove_file(dest_path);
 }
+
+#[test]
+fn test_write_cover_image() {
+    use ebmeta::core::CoverImage;
+    use std::io::Read;
+
+    let mut src_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    src_path.push("tests");
+    src_path.push("CameronCooper-SolarWhisper.epub");
+
+    let mut dest_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    dest_path.push("tests");
+    dest_path.push("output_cover_test.epub");
+
+    std::fs::copy(&src_path, &dest_path).expect("Failed to copy test epub");
+
+    let manager = EpubMetadataManager;
+
+    // Create dummy cover image
+    let dummy_content = vec![0x1, 0x2, 0x3, 0x4]; // Not real JPEG but sufficient for test
+    let cover = CoverImage {
+        content: dummy_content.clone(),
+        media_type: "image/jpeg".to_string(),
+    };
+
+    let mut metadata = manager.read(&dest_path).expect("Read failed");
+    metadata.cover_image = Some(cover);
+
+    manager.write(&dest_path, &metadata).expect("Write failed");
+
+    // Verify
+    // We can't easily verify ZIP content with the Manager (it only reads metadata)
+    // But we can check if the read succeeds (which implies valid OPF)
+    // and ideally we should check if the file is actually there.
+
+    // For deeper verification, we can inspect ZIP directly here
+    let file = std::fs::File::open(&dest_path).unwrap();
+    let mut archive = zip::ZipArchive::new(file).unwrap();
+
+    // Check if we can find the cover file.
+    // The previous code logic defaults to "cover.jpg" if none existed, or reuses existing.
+    // We don't know exactly what the path is without parsing OPF again or knowing the input.
+    // But we can check if *any* file has the content we wrote.
+
+    let mut found = false;
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i).unwrap();
+        if file.is_file() {
+            let mut buf = Vec::new();
+            file.read_to_end(&mut buf).unwrap();
+            if buf == dummy_content {
+                found = true;
+                break;
+            }
+        }
+    }
+    assert!(found, "Cover image file not found in ZIP");
+
+    let _ = std::fs::remove_file(dest_path);
+}

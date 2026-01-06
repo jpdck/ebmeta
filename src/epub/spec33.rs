@@ -111,6 +111,29 @@ pub struct MetaElement {
     pub value: String,
 }
 
+pub struct CoverImageUpdate {
+    pub href: String,
+    pub original_href: Option<String>,
+}
+
+fn get_extension_from_media_type(media_type: &str) -> &str {
+    match media_type {
+        "image/jpeg" => ".jpg",
+        "image/png" => ".png",
+        "image/gif" => ".gif",
+        "image/svg+xml" => ".svg",
+        "image/webp" => ".webp",
+        _ => ".img", // Fallback
+    }
+}
+
+fn change_extension(path: &str, new_ext: &str) -> String {
+    let path = std::path::Path::new(path);
+    path.with_extension(new_ext.trim_start_matches('.'))
+        .to_string_lossy()
+        .into_owned()
+}
+
 /// Represents a `<dc:identifier>` element.
 #[derive(Debug, Default, Deserialize, Serialize, Clone)]
 pub struct Identifier {
@@ -283,6 +306,73 @@ impl PackageDocument {
         }
     }
 
+    /// Sets the cover image in the manifest.
+    ///
+    /// Identifies the existing cover image item (if any) and updates it, or creates a new one.
+    /// Returns the `href` where the image file should be stored.
+    ///
+    /// If the media type changes (e.g. jpg -> png) and the filename extension needs to be updated,
+    /// the returned `href` will reflect the new filename, and `previous_href` will contain the old filename
+    /// so the caller can remove/skip the old file.
+    pub fn set_cover_image(&mut self, media_type: &str) -> CoverImageUpdate {
+        // Find existing cover image item
+        let cover_item_index = self.manifest.items.iter().position(|item| {
+            item.properties
+                .as_deref()
+                .is_some_and(|p| p.split_whitespace().any(|s| s == "cover-image"))
+        });
+
+        if let Some(idx) = cover_item_index {
+            let item = &mut self.manifest.items[idx];
+            let old_href = item.href.clone();
+
+            // Update media type
+            item.media_type = media_type.to_string();
+
+            // Check extension
+            let ext = get_extension_from_media_type(media_type);
+            if item.href.to_lowercase().ends_with(ext) {
+                CoverImageUpdate {
+                    href: item.href.clone(),
+                    original_href: Some(old_href), // Even if same name, we are replacing content
+                }
+            } else {
+                // Change extension
+                let new_href = change_extension(&item.href, ext);
+                item.href.clone_from(&new_href);
+                CoverImageUpdate {
+                    href: new_href,
+                    original_href: Some(old_href),
+                }
+            }
+        } else {
+            // Create new item
+            let ext = get_extension_from_media_type(media_type);
+            let href = format!("cover{ext}");
+            let id = "cover-image".to_string(); // Ensure unique ID? simpler to assume "cover-image" is fine or check collision
+
+            // Ensure ID is unique
+            let mut final_id = id.clone();
+            let mut counter = 1;
+            while self.manifest.items.iter().any(|i| i.id == final_id) {
+                final_id = format!("{id}-{counter}");
+                counter += 1;
+            }
+
+            self.manifest.items.push(ManifestItem {
+                id: final_id,
+                href: href.clone(),
+                media_type: media_type.to_string(),
+                properties: Some("cover-image".into()),
+            });
+
+            CoverImageUpdate {
+                href,
+                original_href: None,
+            }
+        }
+    }
+
     fn update_single_field<F, G>(&mut self, value: Option<&String>, matcher: F, constructor: G)
     where
         F: Fn(&MetadataChild) -> bool,
@@ -402,6 +492,7 @@ fn validate_metadata(metadata: &PackageMetadata, unique_identifier_id: &str) -> 
 fn validate_manifest(manifest: &Manifest) -> Result<(), String> {
     let mut ids = std::collections::HashSet::new();
     let mut has_nav = false;
+    let mut cover_image_count = 0;
 
     for item in &manifest.items {
         // Check for unique IDs
@@ -409,13 +500,27 @@ fn validate_manifest(manifest: &Manifest) -> Result<(), String> {
             return Err(format!("Duplicate manifest item ID: {}", item.id));
         }
 
-        // Check for Navigation Document presence (properties="nav")
-        if item
+        // Parse properties
+        let props: Vec<&str> = item
             .properties
             .as_deref()
-            .is_some_and(|props| props.split_whitespace().any(|p| p == "nav"))
-        {
+            .map(|p| p.split_whitespace().collect())
+            .unwrap_or_default();
+
+        // Check for Navigation Document
+        if props.contains(&"nav") {
             has_nav = true;
+        }
+
+        // Check for cover-image
+        if props.contains(&"cover-image") {
+            cover_image_count += 1;
+            if !item.media_type.starts_with("image/") {
+                return Err(format!(
+                    "Item '{}' with properties='cover-image' must be an image media type, found '{}'",
+                    item.id, item.media_type
+                ));
+            }
         }
 
         // Check hrefs do not contain fragments
@@ -429,6 +534,12 @@ fn validate_manifest(manifest: &Manifest) -> Result<(), String> {
 
     if !has_nav {
         return Err("EPUB 3 requires a Navigation Document (properties='nav')".to_string());
+    }
+
+    if cover_image_count > 1 {
+        return Err(format!(
+            "Only one item can have the 'cover-image' property, found {cover_image_count}"
+        ));
     }
 
     Ok(())
@@ -449,6 +560,10 @@ fn validate_spine(spine: &Spine, manifest: &Manifest) -> Result<(), String> {
     // For validation, let's create a Set of IDs from manifest.
     let manifest_ids: std::collections::HashSet<&String> =
         manifest.items.iter().map(|i| &i.id).collect();
+
+    if spine.itemrefs.is_empty() {
+        return Err("Spine must contain at least one itemref".to_string());
+    }
 
     for itemref in &spine.itemrefs {
         if !manifest_ids.contains(&itemref.idref) {
@@ -599,10 +714,24 @@ mod tests {
                 modified: vec!["2023-01-01T00:00:00Z".into()],
                 ..Default::default()
             },
-            ..Default::default()
+            manifest: Manifest {
+                items: vec![ManifestItem {
+                    id: "nav".into(),
+                    href: "nav.xhtml".into(),
+                    media_type: "application/xhtml+xml".into(),
+                    properties: Some("nav".into()),
+                }],
+            },
+            spine: Spine {
+                page_progression_direction: None,
+                toc: None,
+                itemrefs: vec![SpineItemRef {
+                    idref: "nav".into(),
+                }],
+            },
         };
 
-        let _result = validate_package_document(&pkg);
+        assert!(validate_package_document(&pkg).is_ok());
     }
 
     #[test]
@@ -677,8 +806,63 @@ mod tests {
         assert!(result.is_err(), "Manifest without nav property should fail");
 
         manifest.items[0].properties = Some("nav".into());
-        // Now it should pass (assuming stub allows it or we mock it)
-        // Since validate_manifest is todo!(), this test will panic if run, which is expected for TDD.
+        // Now it should pass
+        let result = validate_manifest(&manifest);
+        assert!(result.is_ok(), "Manifest with nav property should pass");
+    }
+
+    #[test]
+    fn test_cover_image_cardinality() {
+        // EPUB 3.3: Zero or one item with "cover-image" property
+        let mut manifest = Manifest::default();
+        manifest.items.push(ManifestItem {
+            id: "cover1".into(),
+            href: "cover1.jpg".into(),
+            media_type: "image/jpeg".into(),
+            properties: Some("cover-image".into()),
+        });
+        manifest.items.push(ManifestItem {
+            id: "cover2".into(),
+            href: "cover2.jpg".into(),
+            media_type: "image/jpeg".into(),
+            properties: Some("cover-image".into()),
+        });
+        manifest.items.push(ManifestItem {
+            id: "nav".into(),
+            href: "nav.xhtml".into(),
+            media_type: "application/xhtml+xml".into(),
+            properties: Some("nav".into()),
+        });
+
+        let result = validate_manifest(&manifest);
+        assert!(
+            result.is_err(),
+            "Manifest with multiple cover-images should fail"
+        );
+    }
+
+    #[test]
+    fn test_cover_image_media_type() {
+        // EPUB 3.3: cover-image applies to raster and vector image types
+        let mut manifest = Manifest::default();
+        manifest.items.push(ManifestItem {
+            id: "cover".into(),
+            href: "cover.xhtml".into(),
+            media_type: "application/xhtml+xml".into(), // Not an image
+            properties: Some("cover-image".into()),
+        });
+        manifest.items.push(ManifestItem {
+            id: "nav".into(),
+            href: "nav.xhtml".into(),
+            media_type: "application/xhtml+xml".into(),
+            properties: Some("nav".into()),
+        });
+
+        let result = validate_manifest(&manifest);
+        assert!(
+            result.is_err(),
+            "Manifest with non-image cover-image should fail"
+        );
     }
 
     #[test]
@@ -737,8 +921,25 @@ mod tests {
         );
 
         pkg.metadata.modified = vec!["2023-01-01T12:00:00Z".into()];
-        // Should pass or at least fail differently if implemented
-        // let _ = validate_package_document(&pkg);
+
+        // Add valid manifest and spine to make the whole package valid
+        pkg.manifest = Manifest {
+            items: vec![ManifestItem {
+                id: "nav".into(),
+                href: "nav.xhtml".into(),
+                media_type: "application/xhtml+xml".into(),
+                properties: Some("nav".into()),
+            }],
+        };
+        pkg.spine = Spine {
+            page_progression_direction: None,
+            toc: None,
+            itemrefs: vec![SpineItemRef {
+                idref: "nav".into(),
+            }],
+        };
+
+        assert!(validate_package_document(&pkg).is_ok());
     }
 
     #[test]

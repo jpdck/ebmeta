@@ -202,6 +202,15 @@ impl EpubMetadataManager {
         // 3. Update OPF
         pkg.update_from_metadata(metadata);
 
+        let mut cover_update_info = None;
+        if let Some(cover) = &metadata.cover_image {
+            let update = pkg.set_cover_image(&cover.media_type);
+            cover_update_info = Some((update, &cover.content));
+        }
+
+        // Validate before writing
+        spec33::validate_package_document(&pkg).map_err(Error::Format)?;
+
         let new_opf_content = quick_xml::se::to_string(&pkg)
             .map_err(|e| Error::Other(format!("Failed to serialize OPF: {e}")))?;
         let new_opf_content =
@@ -210,6 +219,33 @@ impl EpubMetadataManager {
         // 4. Create new ZIP and copy/replace
         let temp_file = File::create(temp_path)?;
         let mut writer = zip::ZipWriter::new(temp_file);
+
+        // Calculate paths for cover image
+        let opf_parent = Path::new(&opf_path).parent();
+        let mut skip_paths = Vec::new();
+        let mut new_cover_path = None;
+
+        if let Some((update, _)) = &cover_update_info {
+            // Resolve paths relative to OPF
+            let resolve = |href: &str| -> String {
+                opf_parent.map_or_else(
+                    || href.to_string(),
+                    |parent| parent.join(href).to_string_lossy().replace('\\', "/"),
+                )
+            };
+
+            let target_path = resolve(&update.href);
+            new_cover_path = Some(target_path.clone());
+
+            // We should skip the target path if it exists (overwrite)
+            skip_paths.push(target_path);
+
+            // We should also skip the original path if it's different (delete/replace)
+            if let Some(orig) = &update.original_href {
+                let orig_path = resolve(orig);
+                skip_paths.push(orig_path);
+            }
+        }
 
         for i in 0..archive.len() {
             let file = archive
@@ -226,13 +262,25 @@ impl EpubMetadataManager {
                     .start_file(&name, options)
                     .map_err(|e| Error::Other(e.to_string()))?;
                 writer.write_all(new_opf_content.as_bytes())?;
-            } else {
+            } else if !skip_paths.contains(&name) {
                 // Copy other files
                 writer
                     .raw_copy_file(file)
                     .map_err(|e| Error::Other(format!("Failed to copy file {name}: {e}")))?;
             }
         }
+
+        // Write new cover image
+        if let (Some(path), Some((_, content))) = (new_cover_path, cover_update_info) {
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated)
+                .unix_permissions(0o644);
+            writer
+                .start_file(&path, options)
+                .map_err(|e| Error::Other(e.to_string()))?;
+            writer.write_all(content)?;
+        }
+
         writer.finish().map_err(|e| Error::Other(e.to_string()))?;
         Ok(())
     }
