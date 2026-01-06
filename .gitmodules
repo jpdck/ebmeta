@@ -1,0 +1,3 @@
+[submodule "epub-specs"]
+	path = epub-specs
+	url = https://github.com/w3c/epub-specs.git
