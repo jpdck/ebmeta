@@ -120,7 +120,8 @@ impl MetadataIo for EpubMetadataManager {
         // Extract ISBN
         if let Some(isbn) = pkg.metadata.identifiers.iter().find_map(|id| {
             if id.value.to_lowercase().starts_with("urn:isbn:") {
-                Some(id.value[9..].to_string())
+                // Safe extraction avoiding panic on short strings or case mismatch
+                id.value.get(9..).map(ToString::to_string)
             } else {
                 None
             }
@@ -153,15 +154,25 @@ impl MetadataIo for EpubMetadataManager {
     /// * Serialization of the updated OPF fails.
     /// * Renaming the temporary file to the original filename fails.
     fn write(&self, path: &Path, metadata: &Metadata) -> Result<()> {
-        let temp_path = path.with_extension("epub.tmp");
+        let temp_path = path.with_file_name(format!(
+            "{}.tmp",
+            path.file_name()
+                .unwrap_or(path.as_os_str())
+                .to_string_lossy()
+        ));
 
         // Scope to ensure files are closed before rename
         Self::perform_write(path, &temp_path, metadata)?;
 
-        // 5. Replace original
-        std::fs::rename(&temp_path, path)?;
-
-        Ok(())
+        // 5. Replace original. On failure, attempt to clean up the temporary file.
+        match std::fs::rename(&temp_path, path) {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                // Best-effort cleanup; ignore any error from removing the temp file.
+                let _ = std::fs::remove_file(&temp_path);
+                Err(err.into())
+            }
+        }
     }
 }
 

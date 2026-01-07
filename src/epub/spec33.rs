@@ -88,9 +88,9 @@ pub enum MetadataChild {
     Meta(MetaElement),
     /// Catch-all for unknown or unsupported metadata elements.
     ///
-    /// Note: This variant is tagged with `skip_serializing`, which means that any
-    /// metadata elements not explicitly supported by `MetadataChild` will be lost
-    /// during the read-modify-write cycle. This is a known limitation to avoid serialization errors.
+    /// **Warning:** This variant is tagged with `skip_serializing`. Any metadata elements
+    /// that are not explicitly supported by `MetadataChild` (e.g., custom meta tags,
+    /// calibre metadata) will be **lost** during the read-modify-write cycle.
     #[serde(other, skip_serializing)]
     Other,
 }
@@ -355,12 +355,12 @@ impl PackageDocument {
             // Check extension
             let ext = get_extension_from_media_type(media_type);
             if item.href.to_lowercase().ends_with(ext) {
-                // Href did not change; no distinct "original" path to remove/skip.
-                let original_href = (old_href != item.href).then_some(old_href);
-
+                // Href extension matches.
+                // Since we haven't modified item.href yet, it equals old_href.
+                // No need to delete/skip a distinct original file.
                 CoverImageUpdate {
                     href: item.href.clone(),
-                    original_href, // Even if same name, we are replacing content
+                    original_href: None,
                 }
             } else {
                 // Change extension

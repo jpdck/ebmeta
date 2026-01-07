@@ -24,6 +24,7 @@ fn test_read_real_epub() {
 
 #[test]
 #[allow(clippy::permissions_set_readonly_false)]
+#[allow(clippy::disallowed_macros)]
 fn test_write_epub_metadata() {
     let mut src_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     src_path.push("tests");
@@ -67,11 +68,14 @@ fn test_write_epub_metadata() {
     assert!(new_metadata.authors.contains(&new_author));
 
     // Cleanup
-    let _ = std::fs::remove_file(dest_path);
+    if let Err(e) = std::fs::remove_file(&dest_path) {
+        eprintln!("Warning: failed to remove test file {dest_path:?}: {e}");
+    }
 }
 
 #[test]
 #[allow(clippy::permissions_set_readonly_false)]
+#[allow(clippy::disallowed_macros)]
 fn test_write_cover_image() {
     use ebmeta::core::CoverImage;
     use std::io::Read;
@@ -107,34 +111,70 @@ fn test_write_cover_image() {
 
     manager.write(&dest_path, &metadata).expect("Write failed");
 
-    // Verify
-    // We can't easily verify ZIP content with the Manager (it only reads metadata)
-    // But we can check if the read succeeds (which implies valid OPF)
-    // and ideally we should check if the file is actually there.
-
-    // For deeper verification, we can inspect ZIP directly here
+    // Verify cover image via manual OPF lookup (since read() doesn't load cover content yet)
     let file = std::fs::File::open(&dest_path).expect("Failed to open zip");
     let mut archive = zip::ZipArchive::new(file).expect("Failed to open archive");
 
-    // Check if we can find the cover file.
-    // The previous code logic defaults to "cover.jpg" if none existed, or reuses existing.
-    // We don't know exactly what the path is without parsing OPF again or knowing the input.
-    // But we can check if *any* file has the content we wrote.
+    // Read container.xml to find OPF
+    let mut container = archive
+        .by_name("META-INF/container.xml")
+        .expect("Missing container.xml");
+    let mut container_xml = String::new();
+    container.read_to_string(&mut container_xml).unwrap();
+    drop(container);
 
-    let mut found = false;
-    for i in 0..archive.len() {
-        let mut file = archive.by_index(i).expect("Failed to read zip file");
-        if file.is_file() {
-            let mut buf = Vec::new();
-            file.read_to_end(&mut buf)
-                .expect("Failed to read file content");
-            if buf == dummy_content {
-                found = true;
+    // Naive parse of container.xml to find full-path
+    let opf_path = container_xml
+        .split("full-path=\"")
+        .nth(1)
+        .expect("No full-path in container.xml")
+        .split('"')
+        .next()
+        .expect("Invalid full-path");
+
+    // Read OPF
+    let mut opf = archive.by_name(opf_path).expect("Missing OPF file");
+    let mut opf_xml = String::new();
+    opf.read_to_string(&mut opf_xml).unwrap();
+    drop(opf);
+
+    // Find manifest item with properties="cover-image"
+    let mut cover_href = None;
+    // Split by <item to get individual items (handles minified XML better)
+    for part in opf_xml.split("<item") {
+        let has_prop = part.contains("properties=\"cover-image\"")
+            || part.contains("properties=\"nav cover-image\"");
+
+        if has_prop {
+            cover_href = part
+                .split("href=\"")
+                .nth(1)
+                .and_then(|h| h.split('"').next())
+                .map(ToString::to_string);
+
+            if cover_href.is_some() {
                 break;
             }
         }
     }
-    assert!(found, "Cover image file not found in ZIP");
+    let cover_href = cover_href.expect("No cover-image item found in OPF");
 
-    let _ = std::fs::remove_file(dest_path);
+    // Read the actual cover file
+    let cover_path = if let Some(parent) = std::path::Path::new(opf_path).parent() {
+        parent.join(&cover_href).to_str().unwrap().to_string()
+    } else {
+        cover_href
+    };
+
+    let mut cover_file = archive
+        .by_name(&cover_path)
+        .expect("Cover file missing from ZIP");
+    let mut content = Vec::new();
+    cover_file.read_to_end(&mut content).unwrap();
+
+    assert_eq!(content, dummy_content, "Cover content mismatch");
+
+    if let Err(e) = std::fs::remove_file(&dest_path) {
+        eprintln!("Warning: failed to remove test file {dest_path:?}: {e}");
+    }
 }
