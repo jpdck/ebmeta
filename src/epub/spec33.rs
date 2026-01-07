@@ -134,14 +134,14 @@ pub struct CoverImageUpdate {
     pub original_href: Option<String>,
 }
 
-fn get_extension_from_media_type(media_type: &str) -> &str {
+fn get_extensions_from_media_type(media_type: &str) -> &'static [&'static str] {
     match media_type {
-        "image/jpeg" => ".jpg",
-        "image/png" => ".png",
-        "image/gif" => ".gif",
-        "image/svg+xml" => ".svg",
-        "image/webp" => ".webp",
-        _ => ".img", // Fallback
+        "image/jpeg" => &[".jpg", ".jpeg"],
+        "image/png" => &[".png"],
+        "image/gif" => &[".gif"],
+        "image/svg+xml" => &[".svg"],
+        "image/webp" => &[".webp"],
+        _ => &[".img"], // Fallback
     }
 }
 
@@ -367,9 +367,10 @@ impl PackageDocument {
             // Update media type
             item.media_type = media_type.to_string();
 
-            // Check extension
-            let ext = get_extension_from_media_type(media_type);
-            if item.href.to_lowercase().ends_with(ext) {
+            // Check extension (handle multiple valid extensions, e.g., .jpg and .jpeg)
+            let extensions = get_extensions_from_media_type(media_type);
+            let href_lower = item.href.to_lowercase();
+            if extensions.iter().any(|ext| href_lower.ends_with(ext)) {
                 // Href extension matches.
                 // Since we haven't modified item.href yet, it equals old_href.
                 // No need to delete/skip a distinct original file.
@@ -379,7 +380,8 @@ impl PackageDocument {
                 }
             } else {
                 // Change extension
-                let new_href = change_extension(&item.href, ext);
+                let canonical_ext = extensions.first().copied().unwrap_or(".img");
+                let new_href = change_extension(&item.href, canonical_ext);
                 item.href.clone_from(&new_href);
                 CoverImageUpdate {
                     href: new_href,
@@ -388,7 +390,10 @@ impl PackageDocument {
             }
         } else {
             // Create new item
-            let ext = get_extension_from_media_type(media_type);
+            let ext = get_extensions_from_media_type(media_type)
+                .first()
+                .copied()
+                .unwrap_or(".img");
             let href = format!("cover{ext}");
             let id = "cover-image".to_string(); // Ensure unique ID? simpler to assume "cover-image" is fine or check collision
 

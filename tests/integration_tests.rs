@@ -161,7 +161,7 @@ fn test_write_cover_image() {
 
     // Read the actual cover file
     let cover_path = if let Some(parent) = std::path::Path::new(opf_path).parent() {
-        parent.join(&cover_href).to_str().unwrap().to_string()
+        parent.join(&cover_href).to_string_lossy().into_owned()
     } else {
         cover_href
     };
