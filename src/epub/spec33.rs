@@ -535,16 +535,17 @@ impl PackageDocument {
 
 /// Validates the Package Document against core EPUB 3.3 rules.
 ///
-/// Checks:
-/// * Version is 3.0.
-/// * Required metadata exists (title, language, identifier, modified).
-/// * Unique identifier resolution.
-/// * Manifest integrity (no duplicate IDs, no fragments in hrefs).
-/// * Spine integrity (all idrefs exist in manifest).
+/// Specification anchors (EPUB 3.3):
+/// - Package `version` must be `3.0` (EPUB Packages).
+/// - Required metadata includes `dc:title`, `dc:language`, `dc:identifier`,
+///   and exactly one `dcterms:modified` (Core 3.4.1, 3.4.1.4).
+/// - `unique-identifier` must resolve to a `dc:identifier` by ID (Packages).
+/// - Manifest integrity (no duplicate IDs, no fragments in `href`) (Core 3.4.1.6).
+/// - Spine integrity (`itemref@idref` must exist in manifest) (Packages).
 ///
 /// # Errors
 ///
-/// Returns an error if any of the EPUB 3.3 validation rules are violated.
+/// Returns an error if any EPUB 3.3 validation rule is violated.
 /// This includes missing required metadata, invalid attribute values, or
 /// structural inconsistencies between the manifest and spine.
 pub fn validate_package_document(pkg: &PackageDocument) -> Result<(), String> {
@@ -769,6 +770,7 @@ mod tests {
 
     #[test]
     fn test_package_document_version_must_be_3_0() {
+        // EPUB 3.3 Packages: package@version must be "3.0".
         let pkg = PackageDocument {
             version: "2.0".to_string(),
             ..Default::default()
@@ -783,6 +785,7 @@ mod tests {
 
     #[test]
     fn test_unique_identifier_is_required() {
+        // EPUB 3.3 Packages: unique-identifier is required and must be non-empty.
         let pkg = PackageDocument {
             version: "3.0".to_string(),
             unique_identifier: String::new(), // Missing or empty
@@ -795,7 +798,7 @@ mod tests {
 
     #[test]
     fn test_required_metadata_elements() {
-        // EPUB 3.3 Core 3.4.1: must include title, language, identifier
+        // EPUB 3.3 Core 3.4.1: must include title, language, identifier, and modified.
         let mut pkg = PackageDocument {
             version: "3.0".to_string(),
             unique_identifier: "uid".to_string(),
@@ -849,7 +852,7 @@ mod tests {
 
     #[test]
     fn test_unique_identifier_resolution() {
-        // The package unique-identifier attribute must reference a dc:identifier element by its ID
+        // EPUB 3.3 Packages: unique-identifier must resolve to a dc:identifier by ID.
         let pkg = PackageDocument {
             version: "3.0".to_string(),
             unique_identifier: "pub-id".to_string(),
@@ -886,7 +889,7 @@ mod tests {
 
     #[test]
     fn test_metadata_cardinality_and_content() {
-        // Strict checks for non-empty strings and single modified date
+        // EPUB 3.3 Core 3.4.1/3.4.1.4: non-empty strings and exactly one modified date.
         let mut pkg = PackageDocument {
             version: "3.0".to_string(),
             unique_identifier: "uid".to_string(),
@@ -943,7 +946,7 @@ mod tests {
 
     #[test]
     fn test_manifest_nav_document_required() {
-        // EPUB 3 requires a Navigation Document
+        // EPUB 3.3 Packages: manifest must include a Navigation Document (properties="nav").
         let mut manifest = Manifest::default();
         manifest.items.push(ManifestItem {
             id: "nav".into(),
@@ -963,7 +966,7 @@ mod tests {
 
     #[test]
     fn test_cover_image_cardinality() {
-        // EPUB 3.3: Zero or one item with "cover-image" property
+        // EPUB 3.3 Packages: zero or one item with "cover-image" property.
         let mut manifest = Manifest::default();
         manifest.items.push(ManifestItem {
             id: "cover1".into(),
@@ -993,7 +996,7 @@ mod tests {
 
     #[test]
     fn test_cover_image_media_type() {
-        // EPUB 3.3: cover-image applies to raster and vector image types
+        // EPUB 3.3 Packages: cover-image must reference an image media type.
         let mut manifest = Manifest::default();
         manifest.items.push(ManifestItem {
             id: "cover".into(),
@@ -1017,6 +1020,7 @@ mod tests {
 
     #[test]
     fn test_spine_idref_validation() {
+        // EPUB 3.3 Packages: spine itemref@idref must exist in manifest.
         let manifest = Manifest {
             items: vec![ManifestItem {
                 id: "item1".into(),
@@ -1048,7 +1052,7 @@ mod tests {
 
     #[test]
     fn test_modified_date_syntax() {
-        // EPUB 3.3 Core 3.4.1.4: must be CCYY-MM-DDThh:mm:ssZ
+        // EPUB 3.3 Core 3.4.1.4: dcterms:modified must be CCYY-MM-DDThh:mm:ssZ.
         let mut pkg = PackageDocument {
             version: "3.0".to_string(),
             unique_identifier: "uid".to_string(),
@@ -1094,6 +1098,7 @@ mod tests {
 
     #[test]
     fn test_spine_page_progression_direction() {
+        // EPUB 3.3 Packages: page-progression-direction must be ltr/rtl/default.
         let manifest = Manifest {
             items: vec![ManifestItem {
                 id: "i1".into(),
@@ -1126,7 +1131,7 @@ mod tests {
 
     #[test]
     fn test_manifest_item_href_no_fragment() {
-        // EPUB 3.3 Core 3.4.1.6: href MUST NOT include a fragment identifier
+        // EPUB 3.3 Core 3.4.1.6: manifest href MUST NOT include a fragment identifier.
         let mut manifest = Manifest::default();
         manifest.items.push(ManifestItem {
             id: "i1".into(),
@@ -1174,6 +1179,7 @@ mod tests {
 
     #[test]
     fn update_from_metadata_rejects_bad_isbn() {
+        // Internal guardrail: refuse invalid ISBNs before writing package metadata.
         let mut pkg = PackageDocument {
             version: "3.0".to_string(),
             unique_identifier: "uid".to_string(),
@@ -1191,6 +1197,7 @@ mod tests {
 
     #[test]
     fn normalize_isbn_accepts_valid_isbn10_and_isbn13() {
+        // Internal guardrail: normalize ISBNs using check-digit validation.
         let ten = normalize_isbn("0-306-40615-2").expect("valid isbn10");
         assert_eq!(ten, "0306406152");
 
