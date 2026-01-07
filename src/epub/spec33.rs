@@ -391,10 +391,11 @@ impl PackageDocument {
         // Series refinements (belongs-to-collection, collection-type, group-position).
         self.update_series_metadata(meta.series.as_deref(), meta.series_index);
 
-        // ISBN
+        // ISBN and unique-identifier (see epub-specs/epub33/core/index.html#unique-identifier)
         if let Some(isbn) = &meta.isbn {
             let normalized = normalize_isbn(isbn)?;
-            self.update_isbn(&normalized);
+            let isbn_id = self.update_isbn(&normalized);
+            self.unique_identifier = isbn_id;
         }
 
         // Update dcterms:modified
@@ -629,24 +630,41 @@ impl PackageDocument {
         }
     }
 
-    fn update_isbn(&mut self, isbn: &str) {
+    fn update_isbn(&mut self, isbn: &str) -> String {
         let isbn_urn = format!("urn:isbn:{isbn}");
-        let found = self.metadata.children.iter_mut().any(|child| match child {
-            MetadataChild::Identifier(id) if id.value.to_lowercase().starts_with("urn:isbn:") => {
-                id.value.clone_from(&isbn_urn);
-                true
-            }
-            _ => false,
-        });
+        let mut ids_in_use = self.collect_ids();
+        let mut isbn_id = None;
 
-        if !found {
+        for child in &mut self.metadata.children {
+            let MetadataChild::Identifier(identifier) = child else {
+                continue;
+            };
+            if !identifier.value.to_lowercase().starts_with("urn:isbn:") {
+                continue;
+            }
+            identifier.value.clone_from(&isbn_urn);
+            if identifier.id.is_none() {
+                let new_id = generate_unique_id(&mut ids_in_use, "isbn");
+                identifier.id = Some(new_id.clone());
+                isbn_id = Some(new_id);
+            } else {
+                isbn_id.clone_from(&identifier.id);
+            }
+            break;
+        }
+
+        if isbn_id.is_none() {
+            let new_id = generate_unique_id(&mut ids_in_use, "isbn");
             self.metadata
                 .children
                 .push(MetadataChild::Identifier(Identifier {
                     value: isbn_urn,
-                    id: Some(format!("isbn-{}", Utc::now().timestamp())),
+                    id: Some(new_id.clone()),
                 }));
+            isbn_id = Some(new_id);
         }
+
+        isbn_id.expect("isbn identifier id should be set")
     }
 
     fn collect_ids(&self) -> HashSet<String> {
@@ -1815,6 +1833,44 @@ mod tests {
             has_group_position,
             "Series group-position should be present"
         );
+    }
+
+    #[test]
+    fn update_from_metadata_updates_unique_identifier_for_isbn() {
+        let mut pkg = PackageDocument {
+            version: "3.0".to_string(),
+            unique_identifier: "uid".to_string(),
+            metadata: PackageMetadata {
+                identifiers: vec![Identifier {
+                    id: Some("uid".to_string()),
+                    value: "urn:uuid:1234".to_string(),
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let meta = Metadata {
+            isbn: Some("9780306406157".to_string()),
+            ..Metadata::default()
+        };
+
+        pkg.update_from_metadata(&meta)
+            .expect("update_from_metadata failed");
+
+        assert!(
+            pkg.unique_identifier.starts_with("isbn-"),
+            "unique-identifier should point at ISBN identifier"
+        );
+
+        let has_isbn = pkg.metadata.children.iter().any(|child| match child {
+            MetadataChild::Identifier(id) => {
+                id.id.as_deref() == Some(pkg.unique_identifier.as_str())
+                    && id.value == "urn:isbn:9780306406157"
+            }
+            _ => false,
+        });
+        assert!(has_isbn, "ISBN identifier should be present");
     }
 
     #[test]
