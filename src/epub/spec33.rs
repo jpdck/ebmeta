@@ -15,6 +15,12 @@ pub struct PackageDocument {
     /// EPUB version (must be "3.0" for this implementation).
     #[serde(rename = "@version")]
     pub version: String,
+    /// XML namespace for OPF (required).
+    #[serde(rename = "@xmlns", default = "default_xmlns")]
+    pub xmlns: String,
+    /// XML namespace for Dublin Core (required).
+    #[serde(rename = "@xmlns:dc", default = "default_xmlns_dc")]
+    pub xmlns_dc: String,
     /// `IDref` pointing to the unique identifier in the metadata section.
     #[serde(rename = "@unique-identifier")]
     pub unique_identifier: String,
@@ -81,8 +87,20 @@ pub enum MetadataChild {
     #[serde(rename = "meta")]
     Meta(MetaElement),
     /// Catch-all for unknown or unsupported metadata elements.
+    ///
+    /// Note: This variant is tagged with `skip_serializing`, which means that any
+    /// metadata elements not explicitly supported by `MetadataChild` will be lost
+    /// during the read-modify-write cycle. This is a known limitation to avoid serialization errors.
     #[serde(other, skip_serializing)]
     Other,
+}
+
+fn default_xmlns() -> String {
+    "http://www.idpf.org/2007/opf".to_string()
+}
+
+fn default_xmlns_dc() -> String {
+    "http://purl.org/dc/elements/1.1/".to_string()
 }
 
 /// A generic simple Dublin Core element (e.g., `<dc:title>Value</dc:title>`).
@@ -189,7 +207,7 @@ impl PackageDocument {
     ///
     /// This method:
     /// 1. Replaces standard fields (Title, Language, Description, Publisher, Date).
-    /// 2. Appends new Creators (Authors) and Subjects (Tags).
+    /// 2. Replaces Creators (Authors) and Subjects (Tags).
     /// 3. Updates `dcterms:modified` to the current UTC time.
     ///
     /// Existing metadata that isn't overwritten is preserved.
@@ -337,9 +355,12 @@ impl PackageDocument {
             // Check extension
             let ext = get_extension_from_media_type(media_type);
             if item.href.to_lowercase().ends_with(ext) {
+                // Href did not change; no distinct "original" path to remove/skip.
+                let original_href = (old_href != item.href).then_some(old_href);
+
                 CoverImageUpdate {
                     href: item.href.clone(),
-                    original_href: Some(old_href), // Even if same name, we are replacing content
+                    original_href, // Even if same name, we are replacing content
                 }
             } else {
                 // Change extension
@@ -394,15 +415,12 @@ impl PackageDocument {
 
     fn update_isbn(&mut self, isbn: &str) {
         let isbn_urn = format!("urn:isbn:{isbn}");
-        let found = self.metadata.children.iter_mut().any(|child| {
-            if let MetadataChild::Identifier(id) = child
-                && id.value.to_lowercase().starts_with("urn:isbn:")
-            {
+        let found = self.metadata.children.iter_mut().any(|child| match child {
+            MetadataChild::Identifier(id) if id.value.to_lowercase().starts_with("urn:isbn:") => {
                 id.value.clone_from(&isbn_urn);
                 true
-            } else {
-                false
             }
+            _ => false,
         });
 
         if !found {
@@ -518,6 +536,10 @@ fn validate_metadata(metadata: &PackageMetadata, unique_identifier_id: &str) -> 
 }
 
 fn validate_manifest(manifest: &Manifest) -> Result<(), String> {
+    if manifest.items.is_empty() {
+        return Err("Manifest must contain at least one item".to_string());
+    }
+
     let mut ids = std::collections::HashSet::new();
     let mut has_nav = false;
     let mut cover_image_count = 0;
@@ -757,6 +779,7 @@ mod tests {
                     idref: "nav".into(),
                 }],
             },
+            ..Default::default()
         };
 
         assert!(validate_package_document(&pkg).is_ok());

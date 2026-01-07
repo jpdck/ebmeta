@@ -258,6 +258,24 @@ impl EpubMetadataManager {
             }
         }
 
+        // EPUB 3.3 requires mimetype file to be first and uncompressed
+        if let Ok(mut mimetype_file) = archive.by_name("mimetype") {
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored)
+                .unix_permissions(0o644);
+            writer
+                .start_file("mimetype", options)
+                .map_err(|e| Error::Other(e.to_string()))?;
+
+            let mut content = Vec::new();
+            mimetype_file
+                .read_to_end(&mut content)
+                .map_err(|e| Error::Other(e.to_string()))?;
+            writer.write_all(&content)?;
+
+            skip_paths.push("mimetype".to_string());
+        }
+
         for i in 0..archive.len() {
             let file = archive
                 .by_index(i)

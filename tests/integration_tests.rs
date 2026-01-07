@@ -23,6 +23,7 @@ fn test_read_real_epub() {
 }
 
 #[test]
+#[allow(clippy::permissions_set_readonly_false)]
 fn test_write_epub_metadata() {
     let mut src_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     src_path.push("tests");
@@ -34,6 +35,13 @@ fn test_write_epub_metadata() {
 
     // Copy file to avoid modifying the original test file
     std::fs::copy(&src_path, &dest_path).expect("Failed to copy test epub");
+
+    // Ensure writable
+    let mut perms = std::fs::metadata(&dest_path)
+        .expect("Failed to get metadata")
+        .permissions();
+    perms.set_readonly(false);
+    std::fs::set_permissions(&dest_path, perms).expect("Failed to set permissions");
 
     let manager = EpubMetadataManager;
 
@@ -63,6 +71,7 @@ fn test_write_epub_metadata() {
 }
 
 #[test]
+#[allow(clippy::permissions_set_readonly_false)]
 fn test_write_cover_image() {
     use ebmeta::core::CoverImage;
     use std::io::Read;
@@ -76,6 +85,13 @@ fn test_write_cover_image() {
     dest_path.push("output_cover_test.epub");
 
     std::fs::copy(&src_path, &dest_path).expect("Failed to copy test epub");
+
+    // Ensure writable
+    let mut perms = std::fs::metadata(&dest_path)
+        .expect("Failed to get metadata")
+        .permissions();
+    perms.set_readonly(false);
+    std::fs::set_permissions(&dest_path, perms).expect("Failed to set permissions");
 
     let manager = EpubMetadataManager;
 
@@ -97,8 +113,8 @@ fn test_write_cover_image() {
     // and ideally we should check if the file is actually there.
 
     // For deeper verification, we can inspect ZIP directly here
-    let file = std::fs::File::open(&dest_path).unwrap();
-    let mut archive = zip::ZipArchive::new(file).unwrap();
+    let file = std::fs::File::open(&dest_path).expect("Failed to open zip");
+    let mut archive = zip::ZipArchive::new(file).expect("Failed to open archive");
 
     // Check if we can find the cover file.
     // The previous code logic defaults to "cover.jpg" if none existed, or reuses existing.
@@ -107,10 +123,11 @@ fn test_write_cover_image() {
 
     let mut found = false;
     for i in 0..archive.len() {
-        let mut file = archive.by_index(i).unwrap();
+        let mut file = archive.by_index(i).expect("Failed to read zip file");
         if file.is_file() {
             let mut buf = Vec::new();
-            file.read_to_end(&mut buf).unwrap();
+            file.read_to_end(&mut buf)
+                .expect("Failed to read file content");
             if buf == dummy_content {
                 found = true;
                 break;
