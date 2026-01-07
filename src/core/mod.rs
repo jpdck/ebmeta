@@ -17,9 +17,9 @@ impl From<std::io::Error> for Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Error::Io(e) => write!(f, "IO error: {}", e),
-            Error::Format(s) => write!(f, "Format error: {}", s),
-            Error::Other(s) => write!(f, "Error: {}", s),
+            Error::Io(e) => write!(f, "IO error: {e}"),
+            Error::Format(s) => write!(f, "Format error: {s}"),
+            Error::Other(s) => write!(f, "Error: {s}"),
         }
     }
 }
@@ -40,8 +40,16 @@ pub struct Metadata {
     pub publisher: Option<String>,
     pub language: Option<String>,
     pub published_date: Option<String>,
+    pub isbn: Option<String>,
     pub duration_seconds: Option<u64>,
     pub tags: Vec<String>,
+    pub cover_image: Option<CoverImage>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CoverImage {
+    pub content: Vec<u8>,
+    pub media_type: String,
 }
 
 /// Interface for reading and writing metadata from/to files.

@@ -1,0 +1,18 @@
+# Cognitive complexity and nesting limits
+excessive-nesting-threshold = 4
+max-fn-params-bools = 5
+
+# Pedantic lints (idiomatic Rust)
+# pedantic-lints = "warn" (Moved to Cargo.toml or command line args)
+
+# Restriction lints (strict safety/clarity)
+disallowed-macros = ["std::println", "std::dbg", "std::eprintln"]  # Force proper logging
+disallowed-methods = [
+    "std::env::set_var",  # Unsafe in multithreaded contexts
+]
+disallowed-types = []
+
+# Complexity limits
+type-complexity-threshold = 250
+too-many-lines-threshold = 150
+single-char-binding-names-threshold = 2
