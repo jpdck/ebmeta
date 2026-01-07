@@ -4,6 +4,8 @@
 
 use crate::core::Metadata;
 use chrono::Utc;
+use quick_xml::events::{BytesStart, Event};
+use quick_xml::{Reader, Writer};
 use serde::{Deserialize, Serialize};
 
 /// Represents the EPUB 3.3 Package Document (usually `content.opf`).
@@ -61,6 +63,8 @@ pub struct PackageMetadata {
     pub meta_elements: Vec<MetaElement>,
     #[serde(skip)]
     pub modified: Vec<String>,
+    #[serde(skip)]
+    pub unknown_children: Vec<String>,
 }
 
 /// Enum representing any valid child of the `<metadata>` element.
@@ -740,6 +744,11 @@ pub fn parse_opf(content: &str) -> Result<PackageDocument, String> {
     let mut pkg: PackageDocument =
         quick_xml::de::from_str(content).map_err(|e| format!("Failed to parse OPF XML: {e}"))?;
 
+    pkg.metadata.unknown_children = extract_unknown_metadata(content)?;
+    pkg.metadata
+        .children
+        .retain(|child| !matches!(child, MetadataChild::Other));
+
     // Post-process metadata children to populate specific fields
     for child in &pkg.metadata.children {
         match child {
@@ -762,6 +771,181 @@ pub fn parse_opf(content: &str) -> Result<PackageDocument, String> {
     }
 
     Ok(pkg)
+}
+
+pub(crate) fn insert_unknown_metadata(opf_xml: &str, unknown: &[String]) -> Result<String, String> {
+    if unknown.is_empty() {
+        return Ok(opf_xml.to_string());
+    }
+
+    let closing_tag = "</metadata>";
+    let Some(insert_at) = opf_xml.find(closing_tag) else {
+        return Err("OPF metadata element not found".to_string());
+    };
+
+    let mut out =
+        String::with_capacity(opf_xml.len() + unknown.iter().map(String::len).sum::<usize>() + 1);
+    out.push_str(&opf_xml[..insert_at]);
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    for fragment in unknown {
+        out.push_str(fragment);
+        if !fragment.ends_with('\n') {
+            out.push('\n');
+        }
+    }
+    out.push_str(&opf_xml[insert_at..]);
+    Ok(out)
+}
+
+fn extract_unknown_metadata(opf_xml: &str) -> Result<Vec<String>, String> {
+    let mut reader = Reader::from_str(opf_xml);
+    let mut buf = Vec::new();
+    let mut unknown = Vec::new();
+    let mut in_metadata = false;
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(event)) => {
+                if event.name().as_ref() == b"metadata" {
+                    in_metadata = true;
+                    buf.clear();
+                    continue;
+                }
+
+                if !in_metadata {
+                    buf.clear();
+                    continue;
+                }
+
+                let name = event.name().as_ref().to_vec();
+                if is_known_metadata_tag(&name) {
+                    buf.clear();
+                    continue;
+                }
+
+                let fragment = capture_unknown_element(&mut reader, event.into_owned())?;
+                unknown.push(fragment);
+            }
+            Ok(Event::Empty(event)) => {
+                if in_metadata && !is_known_metadata_tag(event.name().as_ref()) {
+                    let mut writer = Writer::new(Vec::new());
+                    writer
+                        .write_event(Event::Empty(event.into_owned()))
+                        .map_err(|e| e.to_string())?;
+                    let fragment =
+                        String::from_utf8(writer.into_inner()).map_err(|e| e.to_string())?;
+                    unknown.push(fragment);
+                }
+            }
+            Ok(Event::End(event)) => {
+                if event.name().as_ref() == b"metadata" {
+                    in_metadata = false;
+                }
+            }
+            Ok(Event::Eof) => break,
+            Ok(_) => {}
+            Err(err) => return Err(format!("Failed to parse OPF XML: {err}")),
+        }
+        buf.clear();
+    }
+
+    Ok(unknown)
+}
+
+fn capture_unknown_element<R: std::io::BufRead>(
+    reader: &mut Reader<R>,
+    start: BytesStart<'static>,
+) -> Result<String, String> {
+    let mut writer = Writer::new(Vec::new());
+    writer
+        .write_event(Event::Start(start))
+        .map_err(|e| e.to_string())?;
+
+    let mut buf = Vec::new();
+    let mut depth = 1usize;
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(inner)) => {
+                depth += 1;
+                writer
+                    .write_event(Event::Start(inner.into_owned()))
+                    .map_err(|e| e.to_string())?;
+            }
+            Ok(Event::Empty(inner)) => {
+                writer
+                    .write_event(Event::Empty(inner.into_owned()))
+                    .map_err(|e| e.to_string())?;
+            }
+            Ok(Event::End(inner)) => {
+                writer
+                    .write_event(Event::End(inner.clone()))
+                    .map_err(|e| e.to_string())?;
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    break;
+                }
+            }
+            Ok(Event::Text(inner)) => {
+                writer
+                    .write_event(Event::Text(inner.clone()))
+                    .map_err(|e| e.to_string())?;
+            }
+            Ok(Event::CData(inner)) => {
+                writer
+                    .write_event(Event::CData(inner.clone()))
+                    .map_err(|e| e.to_string())?;
+            }
+            Ok(Event::Comment(inner)) => {
+                writer
+                    .write_event(Event::Comment(inner.clone()))
+                    .map_err(|e| e.to_string())?;
+            }
+            Ok(Event::PI(inner)) => {
+                writer
+                    .write_event(Event::PI(inner.clone()))
+                    .map_err(|e| e.to_string())?;
+            }
+            Ok(Event::Decl(inner)) => {
+                writer
+                    .write_event(Event::Decl(inner.clone()))
+                    .map_err(|e| e.to_string())?;
+            }
+            Ok(Event::Eof) => {
+                return Err("Unexpected EOF while reading metadata element".to_string());
+            }
+            Err(err) => return Err(format!("Failed to parse OPF XML: {err}")),
+            _ => {}
+        }
+        buf.clear();
+    }
+
+    let fragment = String::from_utf8(writer.into_inner()).map_err(|e| e.to_string())?;
+    Ok(fragment)
+}
+
+fn is_known_metadata_tag(name: &[u8]) -> bool {
+    matches!(
+        name,
+        b"dc:title"
+            | b"title"
+            | b"dc:language"
+            | b"language"
+            | b"dc:creator"
+            | b"creator"
+            | b"dc:identifier"
+            | b"identifier"
+            | b"dc:publisher"
+            | b"publisher"
+            | b"dc:description"
+            | b"description"
+            | b"dc:date"
+            | b"date"
+            | b"dc:subject"
+            | b"subject"
+            | b"meta"
+    )
 }
 
 #[cfg(test)]
@@ -1203,5 +1387,35 @@ mod tests {
 
         let thirteen = normalize_isbn("978-0-306-40615-7").expect("valid isbn13");
         assert_eq!(thirteen, "9780306406157");
+    }
+
+    #[test]
+    fn extract_and_insert_unknown_metadata_round_trips() {
+        let opf = r#"<?xml version="1.0" encoding="UTF-8"?>
+<package version="3.0" unique-identifier="uid" xmlns="http://www.idpf.org/2007/opf" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:custom="urn:custom">
+  <metadata>
+    <dc:title>Title</dc:title>
+    <dc:language>en</dc:language>
+    <dc:identifier id="uid">uuid</dc:identifier>
+    <meta property="dcterms:modified">2023-01-01T00:00:00Z</meta>
+    <custom:foo>bar</custom:foo>
+  </metadata>
+  <manifest>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+  </manifest>
+  <spine>
+    <itemref idref="nav"/>
+  </spine>
+</package>"#;
+
+        let unknown = extract_unknown_metadata(opf).expect("extract unknown metadata");
+        assert_eq!(unknown.len(), 1);
+        assert!(unknown[0].contains("custom:foo"));
+
+        let pkg = parse_opf(opf).expect("parse opf");
+        let serialized = quick_xml::se::to_string(&pkg).expect("serialize opf");
+        let with_unknown =
+            insert_unknown_metadata(&serialized, &unknown).expect("insert unknown metadata");
+        assert!(with_unknown.contains("custom:foo"));
     }
 }

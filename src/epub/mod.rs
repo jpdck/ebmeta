@@ -241,6 +241,9 @@ impl EpubMetadataManager {
             .map_err(|e| Error::Other(format!("Failed to serialize OPF: {e}")))?;
         let new_opf_content =
             format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n{new_opf_content}");
+        let new_opf_content =
+            spec33::insert_unknown_metadata(&new_opf_content, &pkg.metadata.unknown_children)
+                .map_err(Error::Other)?;
 
         // 4. Create new ZIP and copy/replace
         let temp_file = File::create(temp_path)?;
