@@ -1,4 +1,4 @@
-use crate::core::{Error, Metadata, MetadataIo, Result};
+use crate::core::{CoverImage, Error, Metadata, MetadataIo, Result};
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::fs::File;
@@ -117,6 +117,33 @@ impl MetadataIo for EpubMetadataManager {
             metadata.published_date = Some(date.clone());
         }
         metadata.tags.clone_from(&pkg.metadata.subjects);
+
+        // Extract cover image (manifest item with properties="cover-image")
+        if let Some(cover_item) = pkg.manifest.items.iter().find(|item| {
+            item.properties
+                .as_deref()
+                .is_some_and(|p| p.split_whitespace().any(|prop| prop == "cover-image"))
+        }) {
+            let cover_path = if let Some(parent) = Path::new(&opf_path).parent() {
+                parent
+                    .join(&cover_item.href)
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            } else {
+                cover_item.href.clone()
+            };
+
+            let mut cover_file = archive.by_name(&cover_path).map_err(|_| {
+                Error::Other(format!("Cover file {cover_path} not found in archive"))
+            })?;
+            let mut content = Vec::new();
+            cover_file.read_to_end(&mut content)?;
+
+            metadata.cover_image = Some(CoverImage {
+                content,
+                media_type: cover_item.media_type.clone(),
+            });
+        }
 
         // Extract ISBN
         if let Some(isbn) = pkg
