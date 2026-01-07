@@ -394,8 +394,11 @@ impl PackageDocument {
         // ISBN and unique-identifier (see epub-specs/epub33/core/index.html#unique-identifier)
         if let Some(isbn) = &meta.isbn {
             let normalized = normalize_isbn(isbn)?;
+            let matches_existing = metadata_has_isbn(&self.metadata.children, &normalized);
             let isbn_id = self.update_isbn(&normalized);
-            self.unique_identifier = isbn_id;
+            if !matches_existing {
+                self.unique_identifier = isbn_id;
+            }
         }
 
         // Update dcterms:modified
@@ -591,8 +594,13 @@ impl PackageDocument {
     fn update_series_metadata(&mut self, series: Option<&str>, series_index: Option<f32>) {
         // EPUB 3.3 collection refinements (belongs-to-collection/collection-type/group-position).
         // See epub-specs/epub33/core/vocab/meta-property.html#sec-belongs-to-collection.
-        let Some(series_name) = series.map(str::trim).filter(|s| !s.is_empty()) else {
-            return;
+        let series_name = match series.map(str::trim) {
+            Some(name) if !name.is_empty() => name,
+            Some(_) => return,
+            None => {
+                self.remove_series_metadata();
+                return;
+            }
         };
 
         let mut ids_in_use = self.collect_ids();
@@ -684,6 +692,74 @@ impl PackageDocument {
             }
         }
         ids
+    }
+
+    fn remove_series_metadata(&mut self) {
+        let collection_type_by_id = collect_collection_types(&self.metadata.children);
+        let mut series_ids: HashSet<String> = collection_type_by_id
+            .iter()
+            .filter_map(|(id, value)| {
+                if value.eq_ignore_ascii_case("series") {
+                    Some(id.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let mut collection_ids = Vec::new();
+        let mut untyped_count = 0usize;
+        for child in &self.metadata.children {
+            let MetadataChild::Meta(meta) = child else {
+                continue;
+            };
+            if meta.property.as_deref() != Some("belongs-to-collection") {
+                continue;
+            }
+            if let Some(id) = meta.id.as_ref() {
+                collection_ids.push(id.clone());
+            } else {
+                untyped_count += 1;
+            }
+        }
+
+        let total_collections = collection_ids.len() + untyped_count;
+        let mut remove_untyped = false;
+        if series_ids.is_empty() && total_collections == 1 {
+            if let Some(id) = collection_ids.first() {
+                series_ids.insert(id.clone());
+            } else {
+                remove_untyped = true;
+            }
+        }
+
+        if series_ids.is_empty() && !remove_untyped {
+            return;
+        }
+
+        self.metadata.children.retain(|child| {
+            let MetadataChild::Meta(meta) = child else {
+                return true;
+            };
+            match meta.property.as_deref() {
+                Some("belongs-to-collection") => {
+                    let remove = meta
+                        .id
+                        .as_ref()
+                        .map_or(remove_untyped, |id| series_ids.contains(id));
+                    !remove
+                }
+                Some("collection-type" | "group-position") => {
+                    let refines_series = meta
+                        .refines
+                        .as_deref()
+                        .and_then(|r| r.strip_prefix('#'))
+                        .is_some_and(|id| series_ids.contains(id));
+                    !refines_series
+                }
+                _ => true,
+            }
+        });
     }
 }
 
@@ -868,7 +944,7 @@ fn insert_id(ids: &mut HashSet<String>, value: Option<&String>) {
     }
 }
 
-fn meta_value(meta: &MetaElement) -> Option<&str> {
+pub(crate) fn meta_value(meta: &MetaElement) -> Option<&str> {
     if meta.value.is_empty() {
         meta.content.as_deref()
     } else {
@@ -876,11 +952,39 @@ fn meta_value(meta: &MetaElement) -> Option<&str> {
     }
 }
 
-fn is_narrator_role(role: &str) -> bool {
+pub(crate) fn is_narrator_role(role: &str) -> bool {
     matches!(
         role.trim().to_ascii_lowercase().as_str(),
         "nrt" | "narrator"
     )
+}
+
+fn metadata_has_isbn(children: &[MetadataChild], normalized: &str) -> bool {
+    children.iter().any(|child| match child {
+        MetadataChild::Identifier(identifier) => identifier_has_isbn(identifier, normalized),
+        _ => false,
+    })
+}
+
+fn identifier_has_isbn(identifier: &Identifier, normalized: &str) -> bool {
+    let Some(isbn) = normalized_isbn_identifier(&identifier.value) else {
+        return false;
+    };
+    isbn == normalized
+}
+
+fn normalized_isbn_identifier(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    if !lower.starts_with("urn:isbn:") {
+        return None;
+    }
+    let idx = trimmed.rfind(':')?;
+    let isbn_start = idx.saturating_add(1);
+    if isbn_start >= trimmed.len() {
+        return None;
+    }
+    normalize_isbn(&trimmed[isbn_start..]).ok()
 }
 
 fn generate_unique_id(existing: &mut HashSet<String>, prefix: &str) -> String {
@@ -1836,6 +1940,49 @@ mod tests {
     }
 
     #[test]
+    fn update_from_metadata_removes_series_when_none() {
+        let mut pkg = PackageDocument {
+            metadata: PackageMetadata {
+                children: vec![
+                    MetadataChild::Meta(MetaElement {
+                        property: Some("belongs-to-collection".to_string()),
+                        value: "Series Name".to_string(),
+                        id: Some("collection-1".to_string()),
+                        ..Default::default()
+                    }),
+                    MetadataChild::Meta(MetaElement {
+                        property: Some("collection-type".to_string()),
+                        refines: Some("#collection-1".to_string()),
+                        value: "series".to_string(),
+                        ..Default::default()
+                    }),
+                    MetadataChild::Meta(MetaElement {
+                        property: Some("group-position".to_string()),
+                        refines: Some("#collection-1".to_string()),
+                        value: "2".to_string(),
+                        ..Default::default()
+                    }),
+                ],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let meta = Metadata::default();
+        pkg.update_from_metadata(&meta)
+            .expect("update_from_metadata failed");
+
+        let has_series_meta = pkg.metadata.children.iter().any(|child| match child {
+            MetadataChild::Meta(meta) => matches!(
+                meta.property.as_deref(),
+                Some("belongs-to-collection" | "collection-type" | "group-position")
+            ),
+            _ => false,
+        });
+        assert!(!has_series_meta, "Series metadata should be removed");
+    }
+
+    #[test]
     fn update_from_metadata_updates_unique_identifier_for_isbn() {
         let mut pkg = PackageDocument {
             version: "3.0".to_string(),
@@ -1871,6 +2018,41 @@ mod tests {
             _ => false,
         });
         assert!(has_isbn, "ISBN identifier should be present");
+    }
+
+    #[test]
+    fn update_from_metadata_preserves_unique_identifier_when_isbn_unchanged() {
+        let mut pkg = PackageDocument {
+            version: "3.0".to_string(),
+            unique_identifier: "uid".to_string(),
+            metadata: PackageMetadata {
+                children: vec![
+                    MetadataChild::Identifier(Identifier {
+                        id: Some("isbn-1".to_string()),
+                        value: "urn:isbn:9780306406157".to_string(),
+                    }),
+                    MetadataChild::Identifier(Identifier {
+                        id: Some("uid".to_string()),
+                        value: "urn:uuid:1234".to_string(),
+                    }),
+                ],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let meta = Metadata {
+            isbn: Some("978-0-306-40615-7".to_string()),
+            ..Metadata::default()
+        };
+
+        pkg.update_from_metadata(&meta)
+            .expect("update_from_metadata failed");
+
+        assert_eq!(
+            pkg.unique_identifier, "uid",
+            "unique-identifier should remain unchanged when ISBN matches"
+        );
     }
 
     #[test]

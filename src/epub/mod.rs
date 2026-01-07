@@ -383,7 +383,7 @@ fn collect_creators_with_roles(
         let Some(refines) = meta.refines.as_deref() else {
             continue;
         };
-        let Some(value) = meta_value(meta) else {
+        let Some(value) = spec33::meta_value(meta) else {
             continue;
         };
         let id = refines.trim_start_matches('#').to_string();
@@ -401,7 +401,7 @@ fn collect_creators_with_roles(
             .id
             .as_ref()
             .and_then(|id| role_map.get(id))
-            .is_some_and(|roles| roles.iter().any(|role| is_narrator_role(role)));
+            .is_some_and(|roles| roles.iter().any(|role| spec33::is_narrator_role(role)));
         if is_narrator {
             narrators.push(elem.value.clone());
         } else {
@@ -429,7 +429,9 @@ fn extract_series_metadata(meta_elements: &[spec33::MetaElement]) -> (Option<Str
     for meta in meta_elements {
         match meta.property.as_deref() {
             Some("collection-type") => {
-                if let (Some(refines), Some(value)) = (meta.refines.as_deref(), meta_value(meta)) {
+                if let (Some(refines), Some(value)) =
+                    (meta.refines.as_deref(), spec33::meta_value(meta))
+                {
                     collection_type_by_id.insert(
                         refines.trim_start_matches('#').to_string(),
                         value.to_string(),
@@ -437,7 +439,9 @@ fn extract_series_metadata(meta_elements: &[spec33::MetaElement]) -> (Option<Str
                 }
             }
             Some("group-position") => {
-                if let (Some(refines), Some(value)) = (meta.refines.as_deref(), meta_value(meta)) {
+                if let (Some(refines), Some(value)) =
+                    (meta.refines.as_deref(), spec33::meta_value(meta))
+                {
                     group_position_by_id.insert(
                         refines.trim_start_matches('#').to_string(),
                         value.to_string(),
@@ -468,7 +472,7 @@ fn extract_series_metadata(meta_elements: &[spec33::MetaElement]) -> (Option<Str
         return (None, None);
     };
 
-    let series = meta_value(meta)
+    let series = spec33::meta_value(meta)
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string);
@@ -480,21 +484,6 @@ fn extract_series_metadata(meta_elements: &[spec33::MetaElement]) -> (Option<Str
         .and_then(|value| value.parse::<f32>().ok());
 
     (series, series_index)
-}
-
-fn meta_value(meta: &spec33::MetaElement) -> Option<&str> {
-    if meta.value.is_empty() {
-        meta.content.as_deref()
-    } else {
-        Some(meta.value.as_str())
-    }
-}
-
-fn is_narrator_role(role: &str) -> bool {
-    matches!(
-        role.trim().to_ascii_lowercase().as_str(),
-        "nrt" | "narrator"
-    )
 }
 
 fn parse_isbn_identifier(value: &str) -> Option<String> {
