@@ -225,8 +225,8 @@ impl EpubMetadataManager {
 
         let mut pkg = spec33::parse_opf(&opf_content).map_err(Error::Other)?;
 
-        // 3. Update OPF
-        pkg.update_from_metadata(metadata);
+        // 3. Update OPF (may fail on invalid metadata such as bad ISBN)
+        pkg.update_from_metadata(metadata).map_err(Error::Format)?;
 
         let mut cover_update_info = None;
         if let Some(cover) = &metadata.cover_image {

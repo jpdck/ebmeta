@@ -152,6 +152,83 @@ fn change_extension(path: &str, new_ext: &str) -> String {
         .into_owned()
 }
 
+fn compute_isbn10_check_digit(digits: &[u8; 9]) -> u8 {
+    let sum: u32 = digits
+        .iter()
+        .zip((2_u32..=10_u32).rev())
+        .map(|(d, w)| u32::from(*d) * w)
+        .sum();
+    ((11 - (sum % 11)) % 11) as u8
+}
+
+fn compute_isbn13_check_digit(digits: &[u8; 12]) -> u8 {
+    let sum: u32 = digits
+        .iter()
+        .enumerate()
+        .map(|(idx, d)| u32::from(*d) * if idx % 2 == 0 { 1 } else { 3 })
+        .sum();
+    ((10 - (sum % 10)) % 10) as u8
+}
+
+fn normalize_isbn(isbn: &str) -> Result<String, String> {
+    let compact: String = isbn
+        .chars()
+        .filter(|c| !c.is_ascii_whitespace() && *c != '-')
+        .collect();
+
+    let to_digit = |ch: char, ctx: &str| -> Result<u8, String> {
+        ch.to_digit(10)
+            .ok_or_else(|| ctx.to_string())
+            .and_then(|d| u8::try_from(d).map_err(|_| ctx.to_string()))
+    };
+
+    match compact.len() {
+        10 => {
+            let mut digits = [0u8; 9];
+            for (idx, ch) in compact.chars().take(9).enumerate() {
+                digits[idx] = to_digit(ch, "ISBN-10 must contain digits 0-9")?;
+            }
+
+            let check_char = compact
+                .chars()
+                .nth(9)
+                .ok_or_else(|| "ISBN-10 missing check digit".to_string())?;
+            let check = if check_char == 'X' || check_char == 'x' {
+                10u8
+            } else {
+                to_digit(check_char, "ISBN-10 check digit must be 0-9 or X")?
+            };
+
+            let expected = compute_isbn10_check_digit(&digits);
+            if expected != check {
+                return Err("Invalid ISBN-10 check digit".to_string());
+            }
+
+            Ok(compact.to_uppercase())
+        }
+        13 => {
+            let mut digits = [0u8; 12];
+            for (idx, ch) in compact.chars().take(12).enumerate() {
+                digits[idx] = to_digit(ch, "ISBN-13 must contain digits 0-9")?;
+            }
+
+            let check_char = compact
+                .chars()
+                .nth(12)
+                .ok_or_else(|| "ISBN-13 missing check digit".to_string())?;
+            let check = to_digit(check_char, "ISBN-13 check digit must be 0-9")?;
+
+            let expected = compute_isbn13_check_digit(&digits);
+            if expected != check {
+                return Err("Invalid ISBN-13 check digit".to_string());
+            }
+
+            Ok(compact)
+        }
+        _ => Err("ISBN must be 10 or 13 characters after removing separators".to_string()),
+    }
+}
+
 /// Represents a `<dc:identifier>` element.
 #[derive(Debug, Default, Deserialize, Serialize, Clone)]
 pub struct Identifier {
@@ -211,7 +288,7 @@ impl PackageDocument {
     /// 3. Updates `dcterms:modified` to the current UTC time.
     ///
     /// Existing metadata that isn't overwritten is preserved.
-    pub fn update_from_metadata(&mut self, meta: &Metadata) {
+    pub fn update_from_metadata(&mut self, meta: &Metadata) -> Result<(), String> {
         // Remove repeatable fields that we are about to replace
         self.metadata
             .children
@@ -314,7 +391,8 @@ impl PackageDocument {
 
         // ISBN
         if let Some(isbn) = &meta.isbn {
-            self.update_isbn(isbn);
+            let normalized = normalize_isbn(isbn)?;
+            self.update_isbn(&normalized);
         }
 
         // Update dcterms:modified
@@ -342,6 +420,7 @@ impl PackageDocument {
                     ..Default::default()
                 }));
         }
+        Ok(())
     }
 
     /// Sets the cover image in the manifest.
@@ -1080,7 +1159,8 @@ mod tests {
             ..Metadata::default()
         };
 
-        pkg.update_from_metadata(&new_meta);
+        pkg.update_from_metadata(&new_meta)
+            .expect("update_from_metadata failed");
 
         let title = pkg.metadata.children.iter().find_map(|child| match child {
             MetadataChild::Title(elem) => Some(elem),
@@ -1090,5 +1170,31 @@ mod tests {
         let title = title.expect("title should exist");
         assert_eq!(title.value, "New Title");
         assert_eq!(title.id.as_deref(), Some("title-id"));
+    }
+
+    #[test]
+    fn update_from_metadata_rejects_bad_isbn() {
+        let mut pkg = PackageDocument {
+            version: "3.0".to_string(),
+            unique_identifier: "uid".to_string(),
+            ..Default::default()
+        };
+
+        let meta = Metadata {
+            isbn: Some("1234567890".to_string()), // invalid check digit
+            ..Metadata::default()
+        };
+
+        let result = pkg.update_from_metadata(&meta);
+        assert!(result.is_err(), "Invalid ISBN should be rejected");
+    }
+
+    #[test]
+    fn normalize_isbn_accepts_valid_isbn10_and_isbn13() {
+        let ten = normalize_isbn("0-306-40615-2").expect("valid isbn10");
+        assert_eq!(ten, "0306406152");
+
+        let thirteen = normalize_isbn("978-0-306-40615-7").expect("valid isbn13");
+        assert_eq!(thirteen, "9780306406157");
     }
 }
