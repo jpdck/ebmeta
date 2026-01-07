@@ -7,6 +7,7 @@ use chrono::Utc;
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::{Reader, Writer};
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 
 /// Represents the EPUB 3.3 Package Document (usually `content.opf`).
 ///
@@ -129,6 +130,8 @@ pub struct MetaElement {
     pub content: Option<String>,
     #[serde(rename = "@refines", skip_serializing_if = "Option::is_none")]
     pub refines: Option<String>,
+    #[serde(rename = "@id", skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     #[serde(rename = "$value", default)]
     pub value: String,
 }
@@ -296,7 +299,7 @@ impl PackageDocument {
         // Remove repeatable fields that we are about to replace
         self.metadata
             .children
-            .retain(|c| !matches!(c, MetadataChild::Creator(_) | MetadataChild::Subject(_)));
+            .retain(|c| !matches!(c, MetadataChild::Subject(_)));
 
         // Title
         self.update_generic_child(
@@ -373,15 +376,7 @@ impl PackageDocument {
             },
         );
 
-        // Creators (Authors)
-        for author in &meta.authors {
-            self.metadata
-                .children
-                .push(MetadataChild::Creator(GenericMetadataElement {
-                    value: author.clone(),
-                    id: None,
-                }));
-        }
+        self.update_creators_with_roles(&meta.authors, &meta.narrators);
 
         // Subjects (Tags)
         for tag in &meta.tags {
@@ -392,6 +387,9 @@ impl PackageDocument {
                     id: None,
                 }));
         }
+
+        // Series refinements (belongs-to-collection, collection-type, group-position).
+        self.update_series_metadata(meta.series.as_deref(), meta.series_index);
 
         // ISBN
         if let Some(isbn) = &meta.isbn {
@@ -516,6 +514,121 @@ impl PackageDocument {
         }
     }
 
+    fn update_creators_with_roles(&mut self, authors: &[String], narrators: &[String]) {
+        // EPUB 3.3 role refinements (see epub-specs/epub33/core/vocab/meta-property.html#sec-role).
+        let (mut existing_ids_by_name, existing_creator_ids) =
+            collect_existing_creators(&self.metadata.children);
+        remove_creator_children(&mut self.metadata.children);
+
+        let mut desired = Vec::new();
+        desired.extend(authors.iter().cloned().map(|name| (name, RoleKind::Author)));
+        desired.extend(
+            narrators
+                .iter()
+                .cloned()
+                .map(|name| (name, RoleKind::Narrator)),
+        );
+
+        let mut ids_in_use = self.collect_ids();
+        let mut kept_creator_ids = HashSet::new();
+        let mut narrator_ids = Vec::new();
+
+        for (name, role) in desired {
+            let existing_id = existing_ids_by_name
+                .get_mut(&name)
+                .and_then(Vec::pop)
+                .flatten();
+
+            let id = match role {
+                RoleKind::Narrator => Some(
+                    existing_id.unwrap_or_else(|| generate_unique_id(&mut ids_in_use, "creator")),
+                ),
+                RoleKind::Author => existing_id,
+            };
+
+            if let Some(id) = &id {
+                kept_creator_ids.insert(id.clone());
+            }
+            if let (RoleKind::Narrator, Some(id)) = (role, id.as_ref()) {
+                narrator_ids.push(id.clone());
+            }
+
+            self.metadata
+                .children
+                .push(MetadataChild::Creator(GenericMetadataElement {
+                    value: name,
+                    id,
+                }));
+        }
+
+        let removed_creator_ids: HashSet<String> = existing_creator_ids
+            .difference(&kept_creator_ids)
+            .cloned()
+            .collect();
+        if !removed_creator_ids.is_empty() {
+            self.metadata
+                .children
+                .retain(|child| keep_child_after_creator_prune(child, &removed_creator_ids));
+        }
+
+        for id in narrator_ids {
+            let has_role = has_narrator_role(&self.metadata.children, &id);
+
+            if !has_role {
+                self.metadata
+                    .children
+                    .push(MetadataChild::Meta(MetaElement {
+                        property: Some("role".to_string()),
+                        refines: Some(format!("#{id}")),
+                        value: "nrt".to_string(),
+                        ..Default::default()
+                    }));
+            }
+        }
+    }
+
+    fn update_series_metadata(&mut self, series: Option<&str>, series_index: Option<f32>) {
+        // EPUB 3.3 collection refinements (belongs-to-collection/collection-type/group-position).
+        // See epub-specs/epub33/core/vocab/meta-property.html#sec-belongs-to-collection.
+        let Some(series_name) = series.map(str::trim).filter(|s| !s.is_empty()) else {
+            return;
+        };
+
+        let mut ids_in_use = self.collect_ids();
+        let collection_type_by_id = collect_collection_types(&self.metadata.children);
+        let (series_meta_idx, mut series_meta_id) =
+            select_series_meta(&self.metadata.children, series_name, &collection_type_by_id);
+
+        if let Some(idx) = series_meta_idx {
+            if let MetadataChild::Meta(meta) = &mut self.metadata.children[idx] {
+                meta.value = series_name.to_string();
+                let id = ensure_meta_id(meta, &mut ids_in_use, "collection");
+                series_meta_id = Some(id);
+            }
+        } else {
+            let new_id = generate_unique_id(&mut ids_in_use, "collection");
+            self.metadata
+                .children
+                .push(MetadataChild::Meta(MetaElement {
+                    property: Some("belongs-to-collection".to_string()),
+                    value: series_name.to_string(),
+                    id: Some(new_id.clone()),
+                    ..Default::default()
+                }));
+            series_meta_id = Some(new_id);
+        }
+
+        let Some(series_id) = series_meta_id else {
+            return;
+        };
+
+        ensure_collection_type(&mut self.metadata.children, &series_id);
+        if let Some(index) = series_index {
+            let value = index.to_string();
+            set_group_position(&mut self.metadata.children, &series_id, &value);
+        }
+    }
+
     fn update_isbn(&mut self, isbn: &str) {
         let isbn_urn = format!("urn:isbn:{isbn}");
         let found = self.metadata.children.iter_mut().any(|child| match child {
@@ -534,6 +647,232 @@ impl PackageDocument {
                     id: Some(format!("isbn-{}", Utc::now().timestamp())),
                 }));
         }
+    }
+
+    fn collect_ids(&self) -> HashSet<String> {
+        let mut ids = HashSet::new();
+        for child in &self.metadata.children {
+            match child {
+                MetadataChild::Title(elem)
+                | MetadataChild::Language(elem)
+                | MetadataChild::Creator(elem)
+                | MetadataChild::Publisher(elem)
+                | MetadataChild::Description(elem)
+                | MetadataChild::Date(elem)
+                | MetadataChild::Subject(elem) => insert_id(&mut ids, elem.id.as_ref()),
+                MetadataChild::Identifier(id) => insert_id(&mut ids, id.id.as_ref()),
+                MetadataChild::Meta(meta) => insert_id(&mut ids, meta.id.as_ref()),
+                MetadataChild::Other => {}
+            }
+        }
+        ids
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RoleKind {
+    Author,
+    Narrator,
+}
+
+fn collect_existing_creators(
+    children: &[MetadataChild],
+) -> (HashMap<String, Vec<Option<String>>>, HashSet<String>) {
+    let mut by_name: HashMap<String, Vec<Option<String>>> = HashMap::new();
+    let mut ids = HashSet::new();
+
+    for child in children {
+        let MetadataChild::Creator(elem) = child else {
+            continue;
+        };
+        by_name
+            .entry(elem.value.clone())
+            .or_default()
+            .push(elem.id.clone());
+        if let Some(id) = elem.id.as_ref() {
+            ids.insert(id.clone());
+        }
+    }
+
+    (by_name, ids)
+}
+
+fn remove_creator_children(children: &mut Vec<MetadataChild>) {
+    children.retain(|child| !matches!(child, MetadataChild::Creator(_)));
+}
+
+fn keep_child_after_creator_prune(child: &MetadataChild, removed: &HashSet<String>) -> bool {
+    if let MetadataChild::Meta(meta) = child {
+        !meta_refines_removed(meta, removed)
+    } else {
+        true
+    }
+}
+
+fn meta_refines_removed(meta: &MetaElement, removed: &HashSet<String>) -> bool {
+    meta.refines
+        .as_deref()
+        .is_some_and(|refines| removed.contains(refines.trim_start_matches('#')))
+}
+
+fn has_narrator_role(children: &[MetadataChild], id: &str) -> bool {
+    children.iter().any(|child| match child {
+        MetadataChild::Meta(meta) => {
+            meta.property.as_deref() == Some("role")
+                && meta.refines.as_deref().map(|r| r.trim_start_matches('#')) == Some(id)
+                && meta_value(meta).is_some_and(is_narrator_role)
+        }
+        _ => false,
+    })
+}
+
+fn refined_meta_value(meta: &MetaElement) -> Option<(String, String)> {
+    let refines = meta.refines.as_deref()?.trim_start_matches('#');
+    let value = meta_value(meta)?;
+    Some((refines.to_string(), value.to_string()))
+}
+
+fn collect_collection_types(children: &[MetadataChild]) -> HashMap<String, String> {
+    let mut collection_type_by_id = HashMap::new();
+    for child in children {
+        let MetadataChild::Meta(meta) = child else {
+            continue;
+        };
+        if meta.property.as_deref() != Some("collection-type") {
+            continue;
+        }
+        let Some((id, value)) = refined_meta_value(meta) else {
+            continue;
+        };
+        collection_type_by_id.insert(id, value);
+    }
+    collection_type_by_id
+}
+
+fn select_series_meta(
+    children: &[MetadataChild],
+    series_name: &str,
+    collection_type_by_id: &HashMap<String, String>,
+) -> (Option<usize>, Option<String>) {
+    let mut by_name = None;
+    let mut candidates = Vec::new();
+
+    for (idx, child) in children.iter().enumerate() {
+        let MetadataChild::Meta(meta) = child else {
+            continue;
+        };
+        if meta.property.as_deref() != Some("belongs-to-collection") {
+            continue;
+        }
+        candidates.push(idx);
+        if meta.value == series_name {
+            by_name = Some((idx, meta.id.clone()));
+            break;
+        }
+    }
+
+    if let Some((idx, id)) = by_name {
+        return (Some(idx), id);
+    }
+
+    for idx in candidates {
+        let MetadataChild::Meta(meta) = &children[idx] else {
+            continue;
+        };
+        let Some(id) = meta.id.as_ref() else { continue };
+        let is_series = collection_type_by_id
+            .get(id)
+            .is_some_and(|value| value.eq_ignore_ascii_case("series"));
+        if is_series {
+            return (Some(idx), Some(id.clone()));
+        }
+    }
+
+    (None, None)
+}
+
+fn ensure_meta_id(meta: &mut MetaElement, ids: &mut HashSet<String>, prefix: &str) -> String {
+    if let Some(id) = meta.id.as_ref() {
+        return id.clone();
+    }
+    let new_id = generate_unique_id(ids, prefix);
+    meta.id = Some(new_id.clone());
+    new_id
+}
+
+fn ensure_collection_type(children: &mut Vec<MetadataChild>, series_id: &str) {
+    let has_collection_type = children.iter().any(|child| match child {
+        MetadataChild::Meta(meta) => {
+            meta.property.as_deref() == Some("collection-type")
+                && meta.refines.as_deref().map(|r| r.trim_start_matches('#')) == Some(series_id)
+        }
+        _ => false,
+    });
+
+    if has_collection_type {
+        return;
+    }
+
+    children.push(MetadataChild::Meta(MetaElement {
+        property: Some("collection-type".to_string()),
+        refines: Some(format!("#{series_id}")),
+        value: "series".to_string(),
+        ..Default::default()
+    }));
+}
+
+fn set_group_position(children: &mut Vec<MetadataChild>, series_id: &str, value: &str) {
+    for child in children.iter_mut() {
+        let MetadataChild::Meta(meta) = child else {
+            continue;
+        };
+        if meta.property.as_deref() != Some("group-position") {
+            continue;
+        }
+        let refines = meta.refines.as_deref().map(|r| r.trim_start_matches('#'));
+        if refines == Some(series_id) {
+            meta.value = value.to_string();
+            return;
+        }
+    }
+
+    children.push(MetadataChild::Meta(MetaElement {
+        property: Some("group-position".to_string()),
+        refines: Some(format!("#{series_id}")),
+        value: value.to_string(),
+        ..Default::default()
+    }));
+}
+
+fn insert_id(ids: &mut HashSet<String>, value: Option<&String>) {
+    if let Some(id) = value {
+        ids.insert(id.clone());
+    }
+}
+
+fn meta_value(meta: &MetaElement) -> Option<&str> {
+    if meta.value.is_empty() {
+        meta.content.as_deref()
+    } else {
+        Some(meta.value.as_str())
+    }
+}
+
+fn is_narrator_role(role: &str) -> bool {
+    matches!(
+        role.trim().to_ascii_lowercase().as_str(),
+        "nrt" | "narrator"
+    )
+}
+
+fn generate_unique_id(existing: &mut HashSet<String>, prefix: &str) -> String {
+    let mut counter = 1u32;
+    loop {
+        let candidate = format!("{prefix}-{counter}");
+        if existing.insert(candidate.clone()) {
+            return candidate;
+        }
+        counter += 1;
     }
 }
 
@@ -1387,6 +1726,95 @@ mod tests {
 
         let thirteen = normalize_isbn("978-0-306-40615-7").expect("valid isbn13");
         assert_eq!(thirteen, "9780306406157");
+    }
+
+    #[test]
+    fn update_from_metadata_adds_narrator_role() {
+        let mut pkg = PackageDocument::default();
+        let meta = Metadata {
+            authors: vec!["Author".to_string()],
+            narrators: vec!["Narrator".to_string()],
+            ..Metadata::default()
+        };
+
+        pkg.update_from_metadata(&meta)
+            .expect("update_from_metadata failed");
+
+        let narrator_id = pkg.metadata.children.iter().find_map(|child| match child {
+            MetadataChild::Creator(elem) if elem.value == "Narrator" => elem.id.clone(),
+            _ => None,
+        });
+        let narrator_id = narrator_id.expect("narrator id should be set");
+
+        let has_role = pkg.metadata.children.iter().any(|child| match child {
+            MetadataChild::Meta(meta) => {
+                meta.property.as_deref() == Some("role")
+                    && meta.refines.as_deref().map(|r| r.trim_start_matches('#'))
+                        == Some(narrator_id.as_str())
+                    && meta_value(meta).is_some_and(|val| val == "nrt")
+            }
+            _ => false,
+        });
+
+        assert!(has_role, "Narrator role metadata should be present");
+    }
+
+    #[test]
+    fn update_from_metadata_adds_series_refinements() {
+        let mut pkg = PackageDocument::default();
+        let meta = Metadata {
+            series: Some("Series Name".to_string()),
+            series_index: Some(2.0),
+            ..Metadata::default()
+        };
+
+        pkg.update_from_metadata(&meta)
+            .expect("update_from_metadata failed");
+
+        let series_id = pkg
+            .metadata
+            .children
+            .iter()
+            .find_map(|child| {
+                let MetadataChild::Meta(meta) = child else {
+                    return None;
+                };
+                if meta.property.as_deref() != Some("belongs-to-collection") {
+                    return None;
+                }
+                if meta.value != "Series Name" {
+                    return None;
+                }
+                meta.id.clone()
+            })
+            .expect("series id should be set");
+
+        let has_collection_type = pkg.metadata.children.iter().any(|child| match child {
+            MetadataChild::Meta(meta) => {
+                meta.property.as_deref() == Some("collection-type")
+                    && meta.refines.as_deref().map(|r| r.trim_start_matches('#'))
+                        == Some(series_id.as_str())
+                    && meta_value(meta).is_some_and(|val| val.eq_ignore_ascii_case("series"))
+            }
+            _ => false,
+        });
+        assert!(
+            has_collection_type,
+            "Series collection-type should be present"
+        );
+
+        let has_group_position = pkg.metadata.children.iter().any(|child| match child {
+            MetadataChild::Meta(meta) => {
+                meta.property.as_deref() == Some("group-position")
+                    && meta.refines.as_deref().map(|r| r.trim_start_matches('#'))
+                        == Some(series_id.as_str())
+            }
+            _ => false,
+        });
+        assert!(
+            has_group_position,
+            "Series group-position should be present"
+        );
     }
 
     #[test]
