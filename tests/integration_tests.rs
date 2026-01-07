@@ -110,13 +110,12 @@ fn test_write_cover_image() {
 
     manager.write(&dest_path, &metadata).expect("Write failed");
 
-    // Read back via metadata reader
+    // Read back via metadata reader (reference only; no bytes)
     let new_metadata = manager.read(&dest_path).expect("Failed to read metadata");
     let cover = new_metadata
-        .cover_image
-        .expect("Cover image missing from metadata");
+        .cover_image_ref
+        .expect("Cover image ref missing from metadata");
     assert_eq!(cover.media_type, "image/jpeg");
-    assert_eq!(cover.content, dummy_content, "Cover content mismatch");
 
     if let Err(e) = std::fs::remove_file(&dest_path) {
         eprintln!("Warning: failed to remove test file {dest_path:?}: {e}");

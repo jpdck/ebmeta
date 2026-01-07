@@ -1,4 +1,4 @@
-use crate::core::{CoverImage, Error, Metadata, MetadataIo, Result};
+use crate::core::{CoverImageRef, Error, Metadata, MetadataIo, Result};
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::fs::File;
@@ -118,7 +118,7 @@ impl MetadataIo for EpubMetadataManager {
         }
         metadata.tags.clone_from(&pkg.metadata.subjects);
 
-        // Extract cover image (manifest item with properties="cover-image")
+        // Extract cover image reference (manifest item with properties="cover-image")
         if let Some(cover_item) = pkg.manifest.items.iter().find(|item| {
             item.properties
                 .as_deref()
@@ -133,14 +133,8 @@ impl MetadataIo for EpubMetadataManager {
                 cover_item.href.clone()
             };
 
-            let mut cover_file = archive.by_name(&cover_path).map_err(|_| {
-                Error::Other(format!("Cover file {cover_path} not found in archive"))
-            })?;
-            let mut content = Vec::new();
-            cover_file.read_to_end(&mut content)?;
-
-            metadata.cover_image = Some(CoverImage {
-                content,
+            metadata.cover_image_ref = Some(CoverImageRef {
+                href: cover_path,
                 media_type: cover_item.media_type.clone(),
             });
         }
