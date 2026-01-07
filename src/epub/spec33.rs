@@ -218,9 +218,12 @@ impl PackageDocument {
             .retain(|c| !matches!(c, MetadataChild::Creator(_) | MetadataChild::Subject(_)));
 
         // Title
-        self.update_single_field(
+        self.update_generic_child(
             meta.title.as_ref(),
-            |child| matches!(child, MetadataChild::Title(_)),
+            |child| match child {
+                MetadataChild::Title(elem) => Some(elem),
+                _ => None,
+            },
             |val| {
                 MetadataChild::Title(GenericMetadataElement {
                     value: val,
@@ -230,9 +233,12 @@ impl PackageDocument {
         );
 
         // Language
-        self.update_single_field(
+        self.update_generic_child(
             meta.language.as_ref(),
-            |child| matches!(child, MetadataChild::Language(_)),
+            |child| match child {
+                MetadataChild::Language(elem) => Some(elem),
+                _ => None,
+            },
             |val| {
                 MetadataChild::Language(GenericMetadataElement {
                     value: val,
@@ -242,9 +248,12 @@ impl PackageDocument {
         );
 
         // Description
-        self.update_single_field(
+        self.update_generic_child(
             meta.description.as_ref(),
-            |child| matches!(child, MetadataChild::Description(_)),
+            |child| match child {
+                MetadataChild::Description(elem) => Some(elem),
+                _ => None,
+            },
             |val| {
                 MetadataChild::Description(GenericMetadataElement {
                     value: val,
@@ -254,9 +263,12 @@ impl PackageDocument {
         );
 
         // Publisher
-        self.update_single_field(
+        self.update_generic_child(
             meta.publisher.as_ref(),
-            |child| matches!(child, MetadataChild::Publisher(_)),
+            |child| match child {
+                MetadataChild::Publisher(elem) => Some(elem),
+                _ => None,
+            },
             |val| {
                 MetadataChild::Publisher(GenericMetadataElement {
                     value: val,
@@ -266,9 +278,12 @@ impl PackageDocument {
         );
 
         // Published Date (dc:date)
-        self.update_single_field(
+        self.update_generic_child(
             meta.published_date.as_ref(),
-            |child| matches!(child, MetadataChild::Date(_)),
+            |child| match child {
+                MetadataChild::Date(elem) => Some(elem),
+                _ => None,
+            },
             |val| {
                 MetadataChild::Date(GenericMetadataElement {
                     value: val,
@@ -399,14 +414,14 @@ impl PackageDocument {
         }
     }
 
-    fn update_single_field<F, G>(&mut self, value: Option<&String>, matcher: F, constructor: G)
+    fn update_generic_child<F, G>(&mut self, value: Option<&String>, extractor: F, constructor: G)
     where
-        F: Fn(&MetadataChild) -> bool,
+        F: Fn(&mut MetadataChild) -> Option<&mut GenericMetadataElement>,
         G: Fn(String) -> MetadataChild,
     {
         if let Some(val) = value {
-            if let Some(child) = self.metadata.children.iter_mut().find(|c| matcher(c)) {
-                *child = constructor(val.clone());
+            if let Some(elem) = self.metadata.children.iter_mut().find_map(extractor) {
+                elem.value.clone_from(val);
             } else {
                 self.metadata.children.push(constructor(val.clone()));
             }
@@ -1038,5 +1053,37 @@ mod tests {
 
         let result = validate_manifest(&manifest);
         assert!(result.is_err(), "Manifest href with fragment should fail");
+    }
+
+    #[test]
+    fn update_from_metadata_preserves_existing_ids() {
+        let mut pkg = PackageDocument {
+            version: "3.0".to_string(),
+            unique_identifier: "uid".to_string(),
+            metadata: PackageMetadata {
+                children: vec![MetadataChild::Title(GenericMetadataElement {
+                    value: "Old Title".to_string(),
+                    id: Some("title-id".to_string()),
+                })],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let new_meta = Metadata {
+            title: Some("New Title".to_string()),
+            ..Metadata::default()
+        };
+
+        pkg.update_from_metadata(&new_meta);
+
+        let title = pkg.metadata.children.iter().find_map(|child| match child {
+            MetadataChild::Title(elem) => Some(elem),
+            _ => None,
+        });
+
+        let title = title.expect("title should exist");
+        assert_eq!(title.value, "New Title");
+        assert_eq!(title.id.as_deref(), Some("title-id"));
     }
 }

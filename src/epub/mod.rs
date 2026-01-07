@@ -1,5 +1,6 @@
 use crate::core::{Error, Metadata, MetadataIo, Result};
 use serde::Deserialize;
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
@@ -118,14 +119,12 @@ impl MetadataIo for EpubMetadataManager {
         metadata.tags.clone_from(&pkg.metadata.subjects);
 
         // Extract ISBN
-        if let Some(isbn) = pkg.metadata.identifiers.iter().find_map(|id| {
-            if id.value.to_lowercase().starts_with("urn:isbn:") {
-                // Safe extraction avoiding panic on short strings or case mismatch
-                id.value.get(9..).map(ToString::to_string)
-            } else {
-                None
-            }
-        }) {
+        if let Some(isbn) = pkg
+            .metadata
+            .identifiers
+            .iter()
+            .find_map(|id| parse_isbn_identifier(&id.value))
+        {
             metadata.isbn = Some(isbn);
         }
 
@@ -161,18 +160,23 @@ impl MetadataIo for EpubMetadataManager {
                 .to_string_lossy()
         ));
 
-        // Scope to ensure files are closed before rename
-        Self::perform_write(path, &temp_path, metadata)?;
+        // Perform write + rename with best-effort cleanup on any failure.
+        let result = (|| -> Result<()> {
+            // Scope to ensure files are closed before rename
+            Self::perform_write(path, &temp_path, metadata)?;
 
-        // 5. Replace original. On failure, attempt to clean up the temporary file.
-        match std::fs::rename(&temp_path, path) {
-            Ok(()) => Ok(()),
-            Err(err) => {
-                // Best-effort cleanup; ignore any error from removing the temp file.
-                let _ = std::fs::remove_file(&temp_path);
-                Err(err.into())
-            }
+            // 5. Replace original.
+            std::fs::rename(&temp_path, path)?;
+
+            Ok(())
+        })();
+
+        if result.is_err() {
+            // Best-effort cleanup; ignore any error from removing the temp file.
+            let _ = std::fs::remove_file(&temp_path);
         }
+
+        result
     }
 }
 
@@ -244,7 +248,7 @@ impl EpubMetadataManager {
 
         // Calculate paths for cover image
         let opf_parent = Path::new(&opf_path).parent();
-        let mut skip_paths = Vec::new();
+        let mut skip_paths = HashSet::new();
         let mut new_cover_path = None;
 
         if let Some((update, _)) = &cover_update_info {
@@ -260,31 +264,38 @@ impl EpubMetadataManager {
             new_cover_path = Some(target_path.clone());
 
             // We should skip the target path if it exists (overwrite)
-            skip_paths.push(target_path);
+            skip_paths.insert(target_path);
 
             // We should also skip the original path if it's different (delete/replace)
             if let Some(orig) = &update.original_href {
                 let orig_path = resolve(orig);
-                skip_paths.push(orig_path);
+                skip_paths.insert(orig_path);
             }
         }
 
         // EPUB 3.3 requires mimetype file to be first and uncompressed
-        if let Ok(mut mimetype_file) = archive.by_name("mimetype") {
-            let options = zip::write::SimpleFileOptions::default()
-                .compression_method(zip::CompressionMethod::Stored)
-                .unix_permissions(0o644);
-            writer
-                .start_file("mimetype", options)
-                .map_err(|e| Error::Other(e.to_string()))?;
+        match archive.by_name("mimetype") {
+            Ok(mut mimetype_file) => {
+                let options = zip::write::SimpleFileOptions::default()
+                    .compression_method(zip::CompressionMethod::Stored)
+                    .unix_permissions(0o644);
+                writer
+                    .start_file("mimetype", options)
+                    .map_err(|e| Error::Other(e.to_string()))?;
 
-            let mut content = Vec::new();
-            mimetype_file
-                .read_to_end(&mut content)
-                .map_err(|e| Error::Other(e.to_string()))?;
-            writer.write_all(&content)?;
+                let mut content = Vec::new();
+                mimetype_file
+                    .read_to_end(&mut content)
+                    .map_err(|e| Error::Other(e.to_string()))?;
+                writer.write_all(&content)?;
 
-            skip_paths.push("mimetype".to_string());
+                skip_paths.insert("mimetype".to_string());
+            }
+            Err(err) => {
+                return Err(Error::Other(format!(
+                    "EPUB 3.3 validation failed: required 'mimetype' file is missing or unreadable: {err}"
+                )));
+            }
         }
 
         for i in 0..archive.len() {
@@ -323,5 +334,39 @@ impl EpubMetadataManager {
 
         writer.finish().map_err(|e| Error::Other(e.to_string()))?;
         Ok(())
+    }
+}
+
+fn parse_isbn_identifier(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    let lower = trimmed.to_ascii_lowercase();
+
+    if !lower.starts_with("urn:isbn:") {
+        return None;
+    }
+
+    let idx = lower.rfind(':')?;
+    let isbn_start = idx.saturating_add(1);
+    if isbn_start >= trimmed.len() {
+        return None;
+    }
+
+    Some(trimmed[isbn_start..].to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_isbn_identifier;
+
+    #[test]
+    fn parse_isbn_handles_mixed_case_and_whitespace() {
+        let raw = " URN:IsBn:9781234567890 ";
+        let parsed = parse_isbn_identifier(raw);
+        assert_eq!(parsed.as_deref(), Some("9781234567890"));
+    }
+
+    #[test]
+    fn parse_isbn_rejects_non_isbn() {
+        assert!(parse_isbn_identifier("urn:uuid:abc").is_none());
     }
 }
