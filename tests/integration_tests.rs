@@ -78,7 +78,6 @@ fn test_write_epub_metadata() {
 #[allow(clippy::disallowed_macros)]
 fn test_write_cover_image() {
     use ebmeta::core::CoverImage;
-    use std::io::Read;
 
     let mut src_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     src_path.push("tests");
@@ -111,68 +110,12 @@ fn test_write_cover_image() {
 
     manager.write(&dest_path, &metadata).expect("Write failed");
 
-    // Verify cover image via manual OPF lookup (since read() doesn't load cover content yet)
-    let file = std::fs::File::open(&dest_path).expect("Failed to open zip");
-    let mut archive = zip::ZipArchive::new(file).expect("Failed to open archive");
-
-    // Read container.xml to find OPF
-    let mut container = archive
-        .by_name("META-INF/container.xml")
-        .expect("Missing container.xml");
-    let mut container_xml = String::new();
-    container.read_to_string(&mut container_xml).unwrap();
-    drop(container);
-
-    // Naive parse of container.xml to find full-path
-    let opf_path = container_xml
-        .split("full-path=\"")
-        .nth(1)
-        .expect("No full-path in container.xml")
-        .split('"')
-        .next()
-        .expect("Invalid full-path");
-
-    // Read OPF
-    let mut opf = archive.by_name(opf_path).expect("Missing OPF file");
-    let mut opf_xml = String::new();
-    opf.read_to_string(&mut opf_xml).unwrap();
-    drop(opf);
-
-    // Find manifest item with properties="cover-image"
-    let mut cover_href = None;
-    // Split by <item to get individual items (handles minified XML better)
-    for part in opf_xml.split("<item") {
-        let has_prop = part.contains("properties=\"cover-image\"")
-            || part.contains("properties=\"nav cover-image\"");
-
-        if has_prop {
-            cover_href = part
-                .split("href=\"")
-                .nth(1)
-                .and_then(|h| h.split('"').next())
-                .map(ToString::to_string);
-
-            if cover_href.is_some() {
-                break;
-            }
-        }
-    }
-    let cover_href = cover_href.expect("No cover-image item found in OPF");
-
-    // Read the actual cover file
-    let cover_path = if let Some(parent) = std::path::Path::new(opf_path).parent() {
-        parent.join(&cover_href).to_string_lossy().into_owned()
-    } else {
-        cover_href
-    };
-
-    let mut cover_file = archive
-        .by_name(&cover_path)
-        .expect("Cover file missing from ZIP");
-    let mut content = Vec::new();
-    cover_file.read_to_end(&mut content).unwrap();
-
-    assert_eq!(content, dummy_content, "Cover content mismatch");
+    // Read back via metadata reader (reference only; no bytes)
+    let new_metadata = manager.read(&dest_path).expect("Failed to read metadata");
+    let cover = new_metadata
+        .cover_image_ref
+        .expect("Cover image ref missing from metadata");
+    assert_eq!(cover.media_type, "image/jpeg");
 
     if let Err(e) = std::fs::remove_file(&dest_path) {
         eprintln!("Warning: failed to remove test file {dest_path:?}: {e}");

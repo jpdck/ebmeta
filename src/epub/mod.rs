@@ -1,6 +1,6 @@
-use crate::core::{Error, Metadata, MetadataIo, Result};
+use crate::core::{CoverImageRef, Error, Metadata, MetadataIo, Result};
 use serde::Deserialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
@@ -106,7 +106,11 @@ impl MetadataIo for EpubMetadataManager {
         if let Some(lang) = pkg.metadata.languages.first() {
             metadata.language = Some(lang.clone());
         }
-        metadata.authors.clone_from(&pkg.metadata.creators);
+        // EPUB 3.3 role refinements (see epub-specs/epub33/core/vocab/meta-property.html#sec-role).
+        let (authors, narrators) =
+            collect_creators_with_roles(&pkg.metadata.children, &pkg.metadata.meta_elements);
+        metadata.authors = authors;
+        metadata.narrators = narrators;
         if let Some(desc) = pkg.metadata.descriptions.first() {
             metadata.description = Some(desc.clone());
         }
@@ -117,6 +121,32 @@ impl MetadataIo for EpubMetadataManager {
             metadata.published_date = Some(date.clone());
         }
         metadata.tags.clone_from(&pkg.metadata.subjects);
+        // EPUB 3.3 collection refinements (belongs-to-collection/group-position).
+        // See epub-specs/epub33/core/vocab/meta-property.html#sec-belongs-to-collection.
+        let (series, series_index) = extract_series_metadata(&pkg.metadata.meta_elements);
+        metadata.series = series;
+        metadata.series_index = series_index;
+
+        // Extract cover image reference (manifest item with properties="cover-image")
+        if let Some(cover_item) = pkg.manifest.items.iter().find(|item| {
+            item.properties
+                .as_deref()
+                .is_some_and(|p| p.split_whitespace().any(|prop| prop == "cover-image"))
+        }) {
+            let cover_path = if let Some(parent) = Path::new(&opf_path).parent() {
+                parent
+                    .join(&cover_item.href)
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            } else {
+                cover_item.href.clone()
+            };
+
+            metadata.cover_image_ref = Some(CoverImageRef {
+                href: cover_path,
+                media_type: cover_item.media_type.clone(),
+            });
+        }
 
         // Extract ISBN
         if let Some(isbn) = pkg
@@ -225,8 +255,8 @@ impl EpubMetadataManager {
 
         let mut pkg = spec33::parse_opf(&opf_content).map_err(Error::Other)?;
 
-        // 3. Update OPF
-        pkg.update_from_metadata(metadata);
+        // 3. Update OPF (may fail on invalid metadata such as bad ISBN)
+        pkg.update_from_metadata(metadata).map_err(Error::Format)?;
 
         let mut cover_update_info = None;
         if let Some(cover) = &metadata.cover_image {
@@ -241,6 +271,9 @@ impl EpubMetadataManager {
             .map_err(|e| Error::Other(format!("Failed to serialize OPF: {e}")))?;
         let new_opf_content =
             format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n{new_opf_content}");
+        let new_opf_content =
+            spec33::insert_unknown_metadata(&new_opf_content, &pkg.metadata.unknown_children)
+                .map_err(Error::Other)?;
 
         // 4. Create new ZIP and copy/replace
         let temp_file = File::create(temp_path)?;
@@ -335,6 +368,122 @@ impl EpubMetadataManager {
         writer.finish().map_err(|e| Error::Other(e.to_string()))?;
         Ok(())
     }
+}
+
+fn collect_creators_with_roles(
+    children: &[spec33::MetadataChild],
+    meta_elements: &[spec33::MetaElement],
+) -> (Vec<String>, Vec<String>) {
+    // file-as refinements are preserved in metadata children but not mapped to Metadata fields.
+    let mut role_map: HashMap<String, Vec<String>> = HashMap::new();
+    for meta in meta_elements {
+        let Some("role") = meta.property.as_deref() else {
+            continue;
+        };
+        let Some(refines) = meta.refines.as_deref() else {
+            continue;
+        };
+        let Some(value) = spec33::meta_value(meta) else {
+            continue;
+        };
+        let id = refines.trim_start_matches('#').to_string();
+        role_map.entry(id).or_default().push(value.to_string());
+    }
+
+    let mut authors = Vec::new();
+    let mut narrators = Vec::new();
+
+    for child in children {
+        let spec33::MetadataChild::Creator(elem) = child else {
+            continue;
+        };
+        let is_narrator = elem
+            .id
+            .as_ref()
+            .and_then(|id| role_map.get(id))
+            .is_some_and(|roles| roles.iter().any(|role| spec33::is_narrator_role(role)));
+        if is_narrator {
+            narrators.push(elem.value.clone());
+        } else {
+            authors.push(elem.value.clone());
+        }
+    }
+
+    if authors.is_empty() && narrators.is_empty() {
+        for child in children {
+            let spec33::MetadataChild::Creator(elem) = child else {
+                continue;
+            };
+            authors.push(elem.value.clone());
+        }
+    }
+
+    (authors, narrators)
+}
+
+fn extract_series_metadata(meta_elements: &[spec33::MetaElement]) -> (Option<String>, Option<f32>) {
+    let mut collection_type_by_id: HashMap<String, String> = HashMap::new();
+    let mut group_position_by_id: HashMap<String, String> = HashMap::new();
+    let mut collections = Vec::new();
+
+    for meta in meta_elements {
+        match meta.property.as_deref() {
+            Some("collection-type") => {
+                if let (Some(refines), Some(value)) =
+                    (meta.refines.as_deref(), spec33::meta_value(meta))
+                {
+                    collection_type_by_id.insert(
+                        refines.trim_start_matches('#').to_string(),
+                        value.to_string(),
+                    );
+                }
+            }
+            Some("group-position") => {
+                if let (Some(refines), Some(value)) =
+                    (meta.refines.as_deref(), spec33::meta_value(meta))
+                {
+                    group_position_by_id.insert(
+                        refines.trim_start_matches('#').to_string(),
+                        value.to_string(),
+                    );
+                }
+            }
+            Some("belongs-to-collection") => collections.push(meta),
+            _ => {}
+        }
+    }
+
+    let mut candidate = collections
+        .iter()
+        .find(|meta| {
+            meta.id.as_deref().is_some_and(|id| {
+                collection_type_by_id
+                    .get(id)
+                    .is_some_and(|v| v.eq_ignore_ascii_case("series"))
+            })
+        })
+        .copied();
+
+    if candidate.is_none() && collections.len() == 1 {
+        candidate = collections.first().copied();
+    }
+
+    let Some(meta) = candidate else {
+        return (None, None);
+    };
+
+    let series = spec33::meta_value(meta)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+
+    let series_index = meta
+        .id
+        .as_deref()
+        .and_then(|id| group_position_by_id.get(id))
+        .and_then(|value| value.parse::<f32>().ok());
+
+    (series, series_index)
 }
 
 fn parse_isbn_identifier(value: &str) -> Option<String> {

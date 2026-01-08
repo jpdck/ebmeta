@@ -43,7 +43,22 @@ pub struct Metadata {
     pub isbn: Option<String>,
     pub duration_seconds: Option<u64>,
     pub tags: Vec<String>,
+    /// Safe cover image reference extracted from the EPUB manifest.
+    ///
+    /// Design choice: we do not trust EPUB content and do not read cover bytes by default.
+    /// Consumers can request or supply bytes explicitly via `cover_image`.
+    pub cover_image_ref: Option<CoverImageRef>,
     pub cover_image: Option<CoverImage>,
+}
+
+#[derive(Debug, Clone)]
+/// Reference to a cover image embedded in the source file.
+///
+/// This points at the resource location and media type without loading bytes.
+/// Use `CoverImage` when the actual image data is required.
+pub struct CoverImageRef {
+    pub href: String,
+    pub media_type: String,
 }
 
 #[derive(Debug, Clone)]
