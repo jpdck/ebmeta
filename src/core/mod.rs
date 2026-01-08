@@ -52,6 +52,10 @@ pub struct Metadata {
 }
 
 #[derive(Debug, Clone)]
+/// Reference to a cover image embedded in the source file.
+///
+/// This points at the resource location and media type without loading bytes.
+/// Use `CoverImage` when the actual image data is required.
 pub struct CoverImageRef {
     pub href: String,
     pub media_type: String,

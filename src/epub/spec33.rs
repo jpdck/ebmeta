@@ -642,6 +642,7 @@ impl PackageDocument {
         let isbn_urn = format!("urn:isbn:{isbn}");
         let mut ids_in_use = self.collect_ids();
         let mut isbn_id = None;
+        let mut updated_any = false;
 
         for child in &mut self.metadata.children {
             let MetadataChild::Identifier(identifier) = child else {
@@ -650,18 +651,15 @@ impl PackageDocument {
             if !identifier.value.to_lowercase().starts_with("urn:isbn:") {
                 continue;
             }
+            updated_any = true;
             identifier.value.clone_from(&isbn_urn);
-            if identifier.id.is_none() {
-                let new_id = generate_unique_id(&mut ids_in_use, "isbn");
-                identifier.id = Some(new_id.clone());
-                isbn_id = Some(new_id);
-            } else {
-                isbn_id.clone_from(&identifier.id);
+            if isbn_id.is_none() {
+                let id = Self::ensure_identifier_id(identifier, &mut ids_in_use);
+                isbn_id = Some(id);
             }
-            break;
         }
 
-        if isbn_id.is_none() {
+        if !updated_any {
             let new_id = generate_unique_id(&mut ids_in_use, "isbn");
             self.metadata
                 .children
@@ -673,6 +671,19 @@ impl PackageDocument {
         }
 
         isbn_id.expect("isbn identifier id should be set")
+    }
+
+    fn ensure_identifier_id(
+        identifier: &mut Identifier,
+        ids_in_use: &mut HashSet<String>,
+    ) -> String {
+        if let Some(id) = identifier.id.as_ref() {
+            return id.clone();
+        }
+
+        let new_id = generate_unique_id(ids_in_use, "isbn");
+        identifier.id = Some(new_id.clone());
+        new_id
     }
 
     fn collect_ids(&self) -> HashSet<String> {
@@ -1260,6 +1271,8 @@ pub(crate) fn insert_unknown_metadata(opf_xml: &str, unknown: &[String]) -> Resu
     Ok(out)
 }
 
+const MAX_UNKNOWN_METADATA_DEPTH: usize = 64;
+
 fn extract_unknown_metadata(opf_xml: &str) -> Result<Vec<String>, String> {
     let mut reader = Reader::from_str(opf_xml);
     let mut buf = Vec::new();
@@ -1330,6 +1343,9 @@ fn capture_unknown_element<R: std::io::BufRead>(
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(inner)) => {
                 depth += 1;
+                if depth > MAX_UNKNOWN_METADATA_DEPTH {
+                    return Err("Metadata element nesting exceeds maximum depth".to_string());
+                }
                 writer
                     .write_event(Event::Start(inner.into_owned()))
                     .map_err(|e| e.to_string())?;
@@ -2056,6 +2072,56 @@ mod tests {
     }
 
     #[test]
+    fn update_from_metadata_updates_all_isbn_identifiers() {
+        let mut pkg = PackageDocument {
+            version: "3.0".to_string(),
+            unique_identifier: "uid".to_string(),
+            metadata: PackageMetadata {
+                children: vec![
+                    MetadataChild::Identifier(Identifier {
+                        id: Some("isbn-a".to_string()),
+                        value: "urn:isbn:9781111111111".to_string(),
+                    }),
+                    MetadataChild::Identifier(Identifier {
+                        id: Some("isbn-b".to_string()),
+                        value: "urn:isbn:9782222222222".to_string(),
+                    }),
+                ],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let meta = Metadata {
+            isbn: Some("978-0-306-40615-7".to_string()),
+            ..Metadata::default()
+        };
+
+        pkg.update_from_metadata(&meta)
+            .expect("update_from_metadata failed");
+
+        let isbn_values: Vec<String> = pkg
+            .metadata
+            .children
+            .iter()
+            .filter_map(|child| match child {
+                MetadataChild::Identifier(id) if id.value.starts_with("urn:isbn:") => {
+                    Some(id.value.clone())
+                }
+                _ => None,
+            })
+            .collect();
+
+        assert!(isbn_values.len() >= 2, "Expected multiple ISBN identifiers");
+        assert!(
+            isbn_values
+                .iter()
+                .all(|value| value == "urn:isbn:9780306406157"),
+            "All ISBN identifiers should be updated"
+        );
+    }
+
+    #[test]
     fn extract_and_insert_unknown_metadata_round_trips() {
         let opf = r#"<?xml version="1.0" encoding="UTF-8"?>
 <package version="3.0" unique-identifier="uid" xmlns="http://www.idpf.org/2007/opf" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:custom="urn:custom">
@@ -2083,5 +2149,24 @@ mod tests {
         let with_unknown =
             insert_unknown_metadata(&serialized, &unknown).expect("insert unknown metadata");
         assert!(with_unknown.contains("custom:foo"));
+    }
+
+    #[test]
+    fn extract_unknown_metadata_rejects_excessive_depth() {
+        let mut opf = String::from("<package><metadata>");
+        opf.push_str("<custom>");
+        for _ in 0..MAX_UNKNOWN_METADATA_DEPTH {
+            opf.push_str("<custom>");
+        }
+        for _ in 0..=MAX_UNKNOWN_METADATA_DEPTH {
+            opf.push_str("</custom>");
+        }
+        opf.push_str("</metadata></package>");
+
+        let err = extract_unknown_metadata(&opf).expect_err("expected depth limit error");
+        assert!(
+            err.contains("nesting exceeds maximum depth"),
+            "unexpected error: {err}"
+        );
     }
 }
