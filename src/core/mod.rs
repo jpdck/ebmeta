@@ -28,6 +28,42 @@ impl std::error::Error for Error {}
 
 pub type Result<T> = result::Result<T, Error>;
 
+/// Audiobook classification
+#[derive(Debug, Clone)]
+pub enum AudiobookType {
+    Fiction,
+    Nonfiction,
+}
+
+/// Contributor to an audiobook (editor, producer, additional narrator)
+#[derive(Debug, Clone)]
+pub struct Contributor {
+    pub name: String,
+    pub role: ContributorRole,
+}
+
+/// Role of a contributor
+#[derive(Debug, Clone)]
+pub enum ContributorRole {
+    Narrator,
+    Editor,
+    Producer,
+    Translator,
+    Other(String),
+}
+
+/// Chapter marker with timestamps
+#[derive(Debug, Clone)]
+pub struct Chapter {
+    pub title: String,
+    /// Start time in milliseconds from beginning
+    pub start_time_ms: u64,
+    /// Optional end time in milliseconds
+    pub end_time_ms: Option<u64>,
+    /// Track number if chapter corresponds to a file
+    pub track_number: Option<u32>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Metadata {
     pub title: Option<String>,
@@ -49,6 +85,28 @@ pub struct Metadata {
     /// Consumers can request or supply bytes explicitly via `cover_image`.
     pub cover_image_ref: Option<CoverImageRef>,
     pub cover_image: Option<CoverImage>,
+
+    // Audiobook-specific fields
+    /// Rating from 0-100 (percentage scale)
+    pub rating: Option<u8>,
+    /// Primary genre classification
+    pub genre: Option<String>,
+    /// Audio bitrate in kbps (deferred to future enhancement)
+    pub bitrate_kbps: Option<u32>,
+    /// File format ("mp3", "m4b", "flac", "ogg")
+    pub format: Option<String>,
+    /// Total number of tracks/chapters
+    pub total_tracks: Option<u32>,
+    /// Copyright notice
+    pub copyright: Option<String>,
+    /// Publisher website URL
+    pub publisher_url: Option<String>,
+    /// Fiction or Nonfiction classification
+    pub audiobook_type: Option<AudiobookType>,
+    /// Additional contributors (editors, producers, ensemble narrators)
+    pub contributors: Vec<Contributor>,
+    /// Chapter markers (both embedded and per-file)
+    pub chapters: Vec<Chapter>,
 }
 
 #[derive(Debug, Clone)]
@@ -73,8 +131,16 @@ pub trait MetadataIo {
     fn can_handle(&self, path: &Path) -> bool;
 
     /// Reads metadata from the file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be read or parsed.
     fn read(&self, path: &Path) -> Result<Metadata>;
 
     /// Writes metadata to the file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be written or updated.
     fn write(&self, path: &Path, metadata: &Metadata) -> Result<()>;
 }

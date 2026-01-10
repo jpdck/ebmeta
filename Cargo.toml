@@ -4,7 +4,14 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-chrono = "0.4.42"
-quick-xml = { version = "0.38.4", features = ["serde", "serialize"] }
+chrono = "0.4"
+id3 = "1.16"
+metaflac = "0.2"
+mp4ameta = "0.13"
+quick-xml = { version = "0.38", features = ["serde", "serialize"] }
 serde = { version = "1.0", features = ["derive"] }
 zip = "7.0.0"
+
+[dev-dependencies]
+serde_json = "1.0"
+tempfile = "3.24"
