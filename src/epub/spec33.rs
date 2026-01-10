@@ -291,16 +291,22 @@ impl PackageDocument {
     ///
     /// This method:
     /// 1. Replaces standard fields (Title, Language, Description, Publisher, Date).
-    /// 2. Replaces Creators (Authors) and Subjects (Tags).
-    /// 3. Updates `dcterms:modified` to the current UTC time.
-    ///
-    /// Existing metadata that isn't overwritten is preserved.
+    ///    - For `Option` fields: `None` preserves existing value, `Some(value)` replaces it
+    /// 2. Replaces Creators (Authors and Narrators).
+    ///    - Preserves creators with other roles (editors, translators, etc.)
+    /// 3. Replaces Subjects (Tags).
+    ///    - **Important**: Tags field is a `Vec`, not `Option<Vec>`, so an empty vec WILL
+    ///      remove all existing subjects. To preserve existing tags, read metadata first
+    ///      and populate the `tags` field before calling this method.
+    /// 4. Updates `dcterms:modified` to the current UTC time.
     ///
     /// # Errors
     ///
     /// Returns an error if metadata validation fails.
     pub fn update_from_metadata(&mut self, meta: &Metadata) -> Result<(), String> {
-        // Remove repeatable fields that we are about to replace
+        // Remove repeatable fields that we are about to replace.
+        // Note: This means empty vecs will clear existing values - this is intentional
+        // for tags/subjects to allow explicit removal.
         self.metadata
             .children
             .retain(|c| !matches!(c, MetadataChild::Subject(_)));
@@ -400,6 +406,11 @@ impl PackageDocument {
             let normalized = normalize_isbn(isbn)?;
             let matches_existing = metadata_has_isbn(&self.metadata.children, &normalized);
             let isbn_id = self.update_isbn(&normalized);
+            // Only update unique_identifier if this is a NEW ISBN.
+            // If the ISBN already exists in the metadata (possibly in multiple identifiers),
+            // we preserve the existing unique_identifier to avoid changing which identifier
+            // is designated as the unique one. This prevents ambiguity when multiple ISBN
+            // identifiers exist with the same value.
             if !matches_existing {
                 self.unique_identifier = isbn_id;
             }
@@ -524,9 +535,21 @@ impl PackageDocument {
 
     fn update_creators_with_roles(&mut self, authors: &[String], narrators: &[String]) {
         // EPUB 3.3 role refinements (see epub-specs/epub33/core/vocab/meta-property.html#sec-role).
+        //
+        // IMPORTANT: This function only manages creators with author or narrator roles.
+        // Creators with OTHER roles (e.g., editor, translator, illustrator) are PRESERVED
+        // to avoid data loss during metadata updates.
+
         let (mut existing_ids_by_name, existing_creator_ids) =
             collect_existing_creators(&self.metadata.children);
-        remove_creator_children(&mut self.metadata.children);
+
+        // Identify creators with roles we DON'T manage (editors, translators, etc.)
+        let creators_with_other_roles =
+            collect_creators_with_unmanaged_roles(&self.metadata.children);
+
+        // Remove ONLY creators that are authors or narrators (or have no role specified)
+        // Preserve creators with other roles (editors, translators, etc.)
+        remove_managed_creator_children(&mut self.metadata.children, &creators_with_other_roles);
 
         let mut desired = Vec::new();
         desired.extend(authors.iter().cloned().map(|name| (name, RoleKind::Author)));
@@ -806,8 +829,58 @@ fn collect_existing_creators(
     (by_name, ids)
 }
 
-fn remove_creator_children(children: &mut Vec<MetadataChild>) {
-    children.retain(|child| !matches!(child, MetadataChild::Creator(_)));
+/// Collects IDs of creators that have roles OTHER than author or narrator.
+///
+/// These creators (e.g., editors, translators, illustrators) should be preserved
+/// during metadata updates to avoid data loss.
+fn collect_creators_with_unmanaged_roles(children: &[MetadataChild]) -> HashSet<String> {
+    children
+        .iter()
+        .filter_map(|child| {
+            let MetadataChild::Meta(meta) = child else {
+                return None;
+            };
+            if meta.property.as_deref() != Some("role") {
+                return None;
+            }
+            let creator_id = meta.refines.as_deref().map(|r| r.trim_start_matches('#'))?;
+            let role_value = meta_value(meta).unwrap_or("");
+            // If the role is NOT author (default) or narrator, preserve this creator
+            // EPUB 3.3 MARC relator codes: "nrt" = narrator, "aut" = author (default if no role)
+            if !is_author_role(role_value) && !is_narrator_role(role_value) {
+                Some(creator_id.to_string())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Removes only creators that are authors or narrators (or have no role).
+/// Preserves creators with other roles (editors, translators, etc.).
+fn remove_managed_creator_children(
+    children: &mut Vec<MetadataChild>,
+    preserve_ids: &HashSet<String>,
+) {
+    children.retain(|child| {
+        if let MetadataChild::Creator(elem) = child {
+            // Keep creators with IDs that should be preserved
+            if let Some(id) = &elem.id {
+                preserve_ids.contains(id)
+            } else {
+                // Remove creators without IDs (they're managed)
+                false
+            }
+        } else {
+            // Keep all non-creator children
+            true
+        }
+    });
+}
+
+fn is_author_role(role: &str) -> bool {
+    // "aut" is the MARC relator code for author, but authors often have no explicit role
+    role.eq_ignore_ascii_case("aut")
 }
 
 fn keep_child_after_creator_prune(child: &MetadataChild, removed: &HashSet<String>) -> bool {
@@ -1002,14 +1075,32 @@ fn normalized_isbn_identifier(value: &str) -> Option<String> {
     normalize_isbn(&trimmed[isbn_start..]).ok()
 }
 
+/// Generates a unique ID with the given prefix, avoiding collisions with existing IDs.
+///
+/// This function scans existing IDs to find the highest counter value for the given prefix,
+/// then starts from `max + 1` to avoid pathological cases where many IDs exist (e.g.,
+/// "creator-1" through "creator-999" would require 999 iterations with naive increment).
 fn generate_unique_id(existing: &mut HashSet<String>, prefix: &str) -> String {
-    let mut counter = 1u32;
+    // Find the max counter already in use for this prefix
+    let max_existing = existing
+        .iter()
+        .filter_map(|id| {
+            // Check if ID matches pattern "prefix-N"
+            id.strip_prefix(prefix)
+                .and_then(|suffix| suffix.strip_prefix('-'))
+                .and_then(|num_str| num_str.parse::<u32>().ok())
+        })
+        .max()
+        .unwrap_or(0);
+
+    // Start from max + 1
+    let mut counter = max_existing.saturating_add(1);
     loop {
         let candidate = format!("{prefix}-{counter}");
         if existing.insert(candidate.clone()) {
             return candidate;
         }
-        counter += 1;
+        counter = counter.saturating_add(1);
     }
 }
 
@@ -1275,8 +1366,45 @@ pub(crate) fn insert_unknown_metadata(opf_xml: &str, unknown: &[String]) -> Resu
     Ok(out)
 }
 
+/// Maximum nesting depth for unknown metadata elements.
+///
+/// This safety limit prevents stack overflow or infinite loops when parsing deeply nested
+/// unknown metadata structures. Set to 64 as a reasonable balance:
+/// - **Real-world usage**: Legitimate EPUB metadata rarely nests beyond 3-4 levels
+/// - **Attack prevention**: Protects against XML bomb attacks with exponential nesting
+/// - **Stack safety**: Prevents stack overflow in recursive parsing
+///
+/// If legitimate EPUBs with deeply nested custom metadata (> 64 levels) are encountered,
+/// this limit can be increased or made configurable. However, such deep nesting is
+/// extremely rare and often indicates malformed or malicious content.
 const MAX_UNKNOWN_METADATA_DEPTH: usize = 64;
 
+/// Extracts unknown (non-standard) metadata elements from an OPF file.
+///
+/// This function parses the entire OPF XML to identify metadata elements that aren't
+/// explicitly supported by our `MetadataChild` enum (e.g., Calibre metadata, custom tags).
+/// These elements are preserved as raw XML strings to prevent data loss during round-trip
+/// read-modify-write operations.
+///
+/// ## Performance Considerations
+///
+/// This function iterates through ALL XML events in the OPF file. For typical EPUB files
+/// with small OPF documents (< 10KB), this is negligible. However, for pathological cases
+/// with very large OPF files (hundreds of KB) or thousands of metadata elements, this
+/// could be slow.
+///
+/// **Expected performance**: O(n) where n is the total number of XML events in the file.
+/// Most EPUB OPF files are small (< 5KB), making this acceptable. If performance becomes
+/// an issue for large files, consider:
+/// - Lazy parsing (only parse unknown metadata when needed)
+/// - Caching parsed results
+/// - Using a streaming parser with selective extraction
+///
+/// ## Errors
+///
+/// Returns an error if:
+/// - The OPF XML is malformed
+/// - Unknown metadata nesting exceeds `MAX_UNKNOWN_METADATA_DEPTH`
 fn extract_unknown_metadata(opf_xml: &str) -> Result<Vec<String>, String> {
     let mut reader = Reader::from_str(opf_xml);
     let mut buf = Vec::new();
