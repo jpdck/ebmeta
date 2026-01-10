@@ -25,8 +25,9 @@ impl MetadataIo for Mp4Handler {
             title: tag.title().map(ToString::to_string),
             authors: extract_authors(&tag),
             narrators: extract_narrators(&tag),
-            series: tag.album().map(ToString::to_string),
-            series_index: extract_track_number(&tag),
+            // MP4 album/track_number represent album metadata, not book series metadata
+            series: None,
+            series_index: None,
             description: tag.comment().map(ToString::to_string),
             published_date: tag.year().map(ToString::to_string),
             genre: tag.genre().map(ToString::to_string),
@@ -76,41 +77,9 @@ impl MetadataIo for Mp4Handler {
             tag.set_album_artist(metadata.narrators.join("; "));
         }
 
-        // Set series (©alb - Album)
-        if let Some(series) = &metadata.series {
-            tag.set_album(series);
-        } else {
-            tag.remove_album();
-        }
-
-        // Set series index / total tracks (track number / track total)
-        // MP4 couples track number and total tracks; they must be written together.
-        // If either `series_index` or `total_tracks` is provided, write both, using
-        // existing tag values for whichever field is not being updated.
-        if metadata.series_index.is_some() || metadata.total_tracks.is_some() {
-            let existing_num = tag.track_number();
-            let existing_total = tag.total_tracks();
-
-            // Saturate f32 -> u16 (standard behavior)
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let track_num: u16 = metadata
-                .series_index
-                .map(|idx| idx as u16)
-                .or(existing_num)
-                .unwrap_or(0);
-
-            // Clamp u32 -> u16 to avoid wrapping
-            #[allow(clippy::cast_possible_truncation)]
-            let track_total: u16 = metadata
-                .total_tracks
-                .map(|total| total.min(u32::from(u16::MAX)) as u16)
-                .or(existing_total)
-                .unwrap_or(0);
-
-            tag.set_track(track_num, track_total);
-        } else {
-            tag.remove_track();
-        }
+        // Series metadata is not written to MP4 tags.
+        // MP4 album/track represent album/track structure, not book series information.
+        // Writing series data here would corrupt the track structure and cause data loss.
 
         // Set genre (©gen)
         if let Some(genre) = &metadata.genre {
@@ -176,10 +145,6 @@ fn extract_narrators(tag: &Tag) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
-}
-
-fn extract_track_number(tag: &Tag) -> Option<f32> {
-    tag.track_number().map(f32::from)
 }
 
 fn extract_cover(tag: &Tag) -> Option<CoverImage> {

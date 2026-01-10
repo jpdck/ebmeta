@@ -19,8 +19,9 @@ impl MetadataIo for Id3Handler {
             title: tag.title().map(ToString::to_string),
             authors: extract_authors(&tag),
             narrators: extract_narrators(&tag),
-            series: tag.album().map(ToString::to_string),
-            series_index: extract_track_number(&tag),
+            // ID3 album/track represent album metadata, not book series metadata
+            series: None,
+            series_index: None,
             description: extract_comments(&tag),
             published_date: extract_year(&tag),
             genre: tag.genre().map(ToString::to_string),
@@ -70,18 +71,10 @@ impl MetadataIo for Id3Handler {
             tag.set_album_artist(metadata.narrators.join("; "));
         }
 
-        // Set series (TALB - Album)
-        if let Some(series) = &metadata.series {
-            tag.set_album(series);
-        } else {
-            tag.remove_album();
-        }
-
-        // Set series index (TRCK - Track)
-        if let Some(idx) = metadata.series_index {
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            tag.set_track(idx as u32);
-        }
+        // Series metadata is not written to ID3 tags.
+        // ID3 TALB (album) and TRCK (track) represent album/track structure,
+        // not book series information. Writing series data here would corrupt
+        // the track structure and cause data loss.
 
         // Set genre
         if let Some(genre) = &metadata.genre {
@@ -186,11 +179,6 @@ fn extract_narrators(tag: &Tag) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn extract_track_number(tag: &Tag) -> Option<f32> {
-    #[allow(clippy::cast_precision_loss)]
-    tag.track().map(|t| t as f32)
-}
-
 fn extract_comments(tag: &Tag) -> Option<String> {
     tag.comments().next().map(|c| c.text.clone())
 }
@@ -258,7 +246,8 @@ fn write_rating(tag: &mut Tag, rating: u8) {
     // Remove existing POPM frames to prevent accumulation
     tag.remove("POPM");
 
-    // Convert 0-100 to 0-255
+    // Clamp rating to valid 0-100 range, then convert to 0-255
+    let rating = rating.min(100);
     #[allow(clippy::cast_possible_truncation)]
     let popm_rating = ((u16::from(rating) * 255) / 100) as u8;
 

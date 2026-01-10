@@ -53,8 +53,9 @@ fn read_flac(path: &Path) -> Result<Metadata> {
         title: get_first_tag(vorbis, "TITLE"),
         authors: get_all_tags(vorbis, "ARTIST"),
         narrators: get_all_tags(vorbis, "PERFORMER"),
-        series: get_first_tag(vorbis, "ALBUM"),
-        series_index: get_first_tag(vorbis, "TRACKNUMBER").and_then(|s| s.parse::<f32>().ok()),
+        // Vorbis ALBUM/TRACKNUMBER represent album metadata, not book series metadata
+        series: None,
+        series_index: None,
         description: get_first_tag(vorbis, "DESCRIPTION")
             .or_else(|| get_first_tag(vorbis, "COMMENT")),
         publisher: get_first_tag(vorbis, "ORGANIZATION"),
@@ -96,15 +97,9 @@ fn write_flac(path: &Path, metadata: &Metadata) -> Result<()> {
         // Set narrators
         set_tags(vorbis, "PERFORMER", &metadata.narrators);
 
-        // Set series
-        set_tag(vorbis, "ALBUM", metadata.series.as_deref());
-
-        // Set series index
-        if let Some(idx) = metadata.series_index {
-            set_tag(vorbis, "TRACKNUMBER", Some(&idx.to_string()));
-        } else {
-            vorbis.remove("TRACKNUMBER");
-        }
+        // Series metadata is not written to Vorbis comments.
+        // Vorbis ALBUM/TRACKNUMBER represent album/track structure, not book series
+        // information. Writing series data here would corrupt the track structure.
 
         // Set genre
         set_tag(vorbis, "GENRE", metadata.genre.as_deref());
@@ -184,7 +179,7 @@ fn parse_rating(rating_str: Option<String>) -> Option<u8> {
                 let num = parts[0].trim().parse::<f32>().ok()?;
                 let denom = parts[1].trim().parse::<f32>().ok()?;
                 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                return Some(((num / denom) * 100.0) as u8);
+                return Some(((num / denom) * 100.0).min(100.0) as u8);
             }
         }
 

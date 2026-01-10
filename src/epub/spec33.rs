@@ -1368,15 +1368,27 @@ pub(crate) fn insert_unknown_metadata(opf_xml: &str, unknown: &[String]) -> Resu
 
 /// Maximum nesting depth for unknown metadata elements.
 ///
-/// This safety limit prevents stack overflow or infinite loops when parsing deeply nested
-/// unknown metadata structures. Set to 64 as a reasonable balance:
-/// - **Real-world usage**: Legitimate EPUB metadata rarely nests beyond 3-4 levels
-/// - **Attack prevention**: Protects against XML bomb attacks with exponential nesting
-/// - **Stack safety**: Prevents stack overflow in recursive parsing
+/// ### Why 64?
 ///
-/// If legitimate EPUBs with deeply nested custom metadata (> 64 levels) are encountered,
-/// this limit can be increased or made configurable. However, such deep nesting is
-/// extremely rare and often indicates malformed or malicious content.
+/// The value 64 is intentionally conservative and was chosen as a practical upper bound:
+///
+/// - **Real-world usage**: Legitimate EPUB metadata rarely nests beyond 3–4 levels. A
+///   limit of 64 is therefore far above what is expected in normal OPF files while still
+///   providing a hard cap for pathological inputs.
+///
+/// - **Attack prevention**: Deeply and recursively nested XML structures are a common
+///   vector for denial-of-service attacks (e.g., "XML bombs"). Limiting the depth to 64
+///   bounds the amount of recursive work we will perform when walking unknown metadata.
+///
+/// - **Stack safety**: The unknown-metadata extraction logic uses recursion. A depth of
+///   64 keeps the recursion well within typical stack limits for modern platforms while
+///   still being liberal enough for any realistic EPUB metadata usage.
+///
+/// This limit is not derived from OPF byte size (e.g., "most OPF files are < 10KB") but
+/// from structural expectations and defensive programming considerations. If we later
+/// encounter legitimate EPUBs that require deeper custom metadata trees, this constant
+/// can be raised or made configurable. Any such change should be reviewed with both
+/// recursion depth and stack size in mind.
 const MAX_UNKNOWN_METADATA_DEPTH: usize = 64;
 
 /// Extracts unknown (non-standard) metadata elements from an OPF file.
