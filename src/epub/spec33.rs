@@ -295,6 +295,10 @@ impl PackageDocument {
     /// 3. Updates `dcterms:modified` to the current UTC time.
     ///
     /// Existing metadata that isn't overwritten is preserved.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if metadata validation fails.
     pub fn update_from_metadata(&mut self, meta: &Metadata) -> Result<(), String> {
         // Remove repeatable fields that we are about to replace
         self.metadata

@@ -5,7 +5,7 @@ use std::path::PathBuf;
 #[test]
 fn test_read_real_epub() {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    path.push("tests");
+    path.push("tests/media");
     path.push("CameronCooper-SolarWhisper.epub");
 
     let manager = EpubMetadataManager;
@@ -27,11 +27,11 @@ fn test_read_real_epub() {
 #[allow(clippy::disallowed_macros)]
 fn test_write_epub_metadata() {
     let mut src_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    src_path.push("tests");
+    src_path.push("tests/media");
     src_path.push("CameronCooper-SolarWhisper.epub");
 
     let mut dest_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    dest_path.push("tests");
+    dest_path.push("tests/media");
     dest_path.push("output_test.epub");
 
     // Copy file to avoid modifying the original test file
@@ -80,11 +80,11 @@ fn test_write_cover_image() {
     use ebmeta::core::CoverImage;
 
     let mut src_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    src_path.push("tests");
+    src_path.push("tests/media");
     src_path.push("CameronCooper-SolarWhisper.epub");
 
     let mut dest_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    dest_path.push("tests");
+    dest_path.push("tests/media");
     dest_path.push("output_cover_test.epub");
 
     std::fs::copy(&src_path, &dest_path).expect("Failed to copy test epub");

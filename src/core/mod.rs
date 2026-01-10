@@ -131,8 +131,16 @@ pub trait MetadataIo {
     fn can_handle(&self, path: &Path) -> bool;
 
     /// Reads metadata from the file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be read or parsed.
     fn read(&self, path: &Path) -> Result<Metadata>;
 
     /// Writes metadata to the file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be written or updated.
     fn write(&self, path: &Path, metadata: &Metadata) -> Result<()>;
 }
