@@ -28,10 +28,69 @@ impl std::error::Error for Error {}
 
 pub type Result<T> = result::Result<T, Error>;
 
+/// Audiobook classification
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AudiobookType {
+    Fiction,
+    Nonfiction,
+}
+
+/// Contributor to an audiobook (editor, producer, additional narrator).
+///
+/// This represents contributors beyond the primary authors and narrators.
+/// For example, an audiobook might have:
+/// - Primary narrator(s) in `Metadata.narrators`
+/// - Additional/guest narrators as `Contributor` with `ContributorRole::Narrator`
+/// - Editors, producers, translators, etc. as `Contributor` with their respective roles
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Contributor {
+    pub name: String,
+    pub role: ContributorRole,
+}
+
+/// Role of a contributor.
+///
+/// **Note on Narrator role**: This is for ADDITIONAL or GUEST narrators beyond the
+/// primary narrator(s) listed in `Metadata.narrators`. For example:
+/// - `Metadata.narrators`: `["John Doe"]` (primary narrator)
+/// - `Metadata.contributors`: `[Contributor { name: "Jane Smith", role: Narrator }]` (guest narrator for chapter 5)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContributorRole {
+    /// Additional/guest narrator (not the primary narrator)
+    Narrator,
+    Editor,
+    Producer,
+    Translator,
+    Other(String),
+}
+
+/// Chapter marker with timestamps
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Chapter {
+    pub title: String,
+    /// Start time in milliseconds from beginning
+    pub start_time_ms: u64,
+    /// Optional end time in milliseconds
+    pub end_time_ms: Option<u64>,
+    /// Track number if chapter corresponds to a file
+    pub track_number: Option<u32>,
+}
+
+/// Metadata for ebooks and audiobooks.
+///
+/// ## Narrator Handling
+///
+/// Narrators are represented in two fields:
+/// - `narrators`: Primary narrator(s) who narrate the main content
+/// - `contributors` with `ContributorRole::Narrator`: Additional/guest narrators
+///
+/// This separation allows proper representation of audiobooks with multiple narrators,
+/// such as dramatized audiobooks or books with guest narrators for specific chapters.
 #[derive(Debug, Clone, Default)]
 pub struct Metadata {
     pub title: Option<String>,
     pub authors: Vec<String>,
+    /// Primary narrator(s). See also: `contributors` for additional/guest narrators.
     pub narrators: Vec<String>,
     pub series: Option<String>,
     pub series_index: Option<f32>,
@@ -49,6 +108,31 @@ pub struct Metadata {
     /// Consumers can request or supply bytes explicitly via `cover_image`.
     pub cover_image_ref: Option<CoverImageRef>,
     pub cover_image: Option<CoverImage>,
+
+    // Audiobook-specific fields
+    /// Rating from 0-100 (percentage scale)
+    pub rating: Option<u8>,
+    /// Primary genre classification
+    pub genre: Option<String>,
+    /// Audio bitrate in kbps (deferred to future enhancement)
+    pub bitrate_kbps: Option<u32>,
+    /// File format ("mp3", "m4b", "flac", "ogg")
+    pub format: Option<String>,
+    /// Total number of tracks/chapters
+    pub total_tracks: Option<u32>,
+    /// Copyright notice
+    pub copyright: Option<String>,
+    /// Publisher website URL
+    pub publisher_url: Option<String>,
+    /// Fiction or Nonfiction classification
+    pub audiobook_type: Option<AudiobookType>,
+    /// Additional contributors beyond primary authors/narrators.
+    ///
+    /// Examples: editors, producers, translators, guest/additional narrators.
+    /// See `ContributorRole` for available roles.
+    pub contributors: Vec<Contributor>,
+    /// Chapter markers (both embedded and per-file)
+    pub chapters: Vec<Chapter>,
 }
 
 #[derive(Debug, Clone)]
@@ -73,8 +157,16 @@ pub trait MetadataIo {
     fn can_handle(&self, path: &Path) -> bool;
 
     /// Reads metadata from the file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be read or parsed.
     fn read(&self, path: &Path) -> Result<Metadata>;
 
     /// Writes metadata to the file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be written or updated.
     fn write(&self, path: &Path, metadata: &Metadata) -> Result<()>;
 }

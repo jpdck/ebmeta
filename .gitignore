@@ -12,5 +12,10 @@
 # Project specific
 *.epub.tmp
 tests/output_test.epub
+tests/media
 scratch_*.txt
 *.epub
+*.mp3
+*.mp4
+*.m4b
+tests/media/
