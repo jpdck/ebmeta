@@ -103,6 +103,8 @@ impl MetadataIo for Id3Handler {
         }
 
         // Set description (COMM - Comments)
+        // First remove existing comment frames to prevent accumulation
+        tag.remove("COMM");
         if let Some(desc) = &metadata.description {
             tag.add_frame(id3::frame::Comment {
                 lang: "eng".to_string(),
@@ -112,6 +114,8 @@ impl MetadataIo for Id3Handler {
         }
 
         // Set copyright (TCOP)
+        // First remove existing copyright frames to prevent accumulation
+        tag.remove("TCOP");
         if let Some(copyright) = &metadata.copyright {
             use id3::frame::{Content, Frame};
             let frame = Frame::with_content("TCOP", Content::Text(copyright.clone()));
@@ -239,6 +243,9 @@ fn extract_year_number(date_str: &str) -> Option<i32> {
 fn write_rating(tag: &mut Tag, rating: u8) {
     use id3::frame::{Content, Frame, Popularimeter};
 
+    // Remove existing POPM frames to prevent accumulation
+    tag.remove("POPM");
+
     // Convert 0-100 to 0-255
     #[allow(clippy::cast_possible_truncation)]
     let popm_rating = ((u16::from(rating) * 255) / 100) as u8;
@@ -255,6 +262,9 @@ fn write_rating(tag: &mut Tag, rating: u8) {
 
 fn write_cover(tag: &mut Tag, cover: &CoverImage) {
     use id3::frame::{Picture, PictureType};
+
+    // Remove existing picture frames to prevent accumulation
+    tag.remove("APIC");
 
     let picture = Picture {
         mime_type: cover.media_type.clone(),

@@ -35,16 +35,28 @@ pub enum AudiobookType {
     Nonfiction,
 }
 
-/// Contributor to an audiobook (editor, producer, additional narrator)
+/// Contributor to an audiobook (editor, producer, additional narrator).
+///
+/// This represents contributors beyond the primary authors and narrators.
+/// For example, an audiobook might have:
+/// - Primary narrator(s) in `Metadata.narrators`
+/// - Additional/guest narrators as `Contributor` with `ContributorRole::Narrator`
+/// - Editors, producers, translators, etc. as `Contributor` with their respective roles
 #[derive(Debug, Clone)]
 pub struct Contributor {
     pub name: String,
     pub role: ContributorRole,
 }
 
-/// Role of a contributor
+/// Role of a contributor.
+///
+/// **Note on Narrator role**: This is for ADDITIONAL or GUEST narrators beyond the
+/// primary narrator(s) listed in `Metadata.narrators`. For example:
+/// - `Metadata.narrators`: `["John Doe"]` (primary narrator)
+/// - `Metadata.contributors`: `[Contributor { name: "Jane Smith", role: Narrator }]` (guest narrator for chapter 5)
 #[derive(Debug, Clone)]
 pub enum ContributorRole {
+    /// Additional/guest narrator (not the primary narrator)
     Narrator,
     Editor,
     Producer,
@@ -64,10 +76,21 @@ pub struct Chapter {
     pub track_number: Option<u32>,
 }
 
+/// Metadata for ebooks and audiobooks.
+///
+/// ## Narrator Handling
+///
+/// Narrators are represented in two fields:
+/// - `narrators`: Primary narrator(s) who narrate the main content
+/// - `contributors` with `ContributorRole::Narrator`: Additional/guest narrators
+///
+/// This separation allows proper representation of audiobooks with multiple narrators,
+/// such as dramatized audiobooks or books with guest narrators for specific chapters.
 #[derive(Debug, Clone, Default)]
 pub struct Metadata {
     pub title: Option<String>,
     pub authors: Vec<String>,
+    /// Primary narrator(s). See also: `contributors` for additional/guest narrators.
     pub narrators: Vec<String>,
     pub series: Option<String>,
     pub series_index: Option<f32>,
@@ -103,7 +126,10 @@ pub struct Metadata {
     pub publisher_url: Option<String>,
     /// Fiction or Nonfiction classification
     pub audiobook_type: Option<AudiobookType>,
-    /// Additional contributors (editors, producers, ensemble narrators)
+    /// Additional contributors beyond primary authors/narrators.
+    ///
+    /// Examples: editors, producers, translators, guest/additional narrators.
+    /// See `ContributorRole` for available roles.
     pub contributors: Vec<Contributor>,
     /// Chapter markers (both embedded and per-file)
     pub chapters: Vec<Chapter>,
