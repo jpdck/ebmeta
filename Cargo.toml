@@ -11,3 +11,6 @@ mp4ameta = "0.13.0"
 quick-xml = { version = "0.38.4", features = ["serde", "serialize"] }
 serde = { version = "1.0", features = ["derive"] }
 zip = "7.0.0"
+
+[dev-dependencies]
+serde_json = "1.0"
