@@ -32,7 +32,7 @@ impl MetadataIo for Mp4Handler {
             genre: tag.genre().map(ToString::to_string),
             rating: None, // MP4 doesn't have standard rating atom
             format,
-            total_tracks: None, // Will extract from track() if needed
+            total_tracks: tag.total_tracks().map(u32::from),
             copyright: tag.copyright().map(ToString::to_string),
             cover_image: extract_cover(&tag),
             // Chapter support will be added later
@@ -86,8 +86,13 @@ impl MetadataIo for Mp4Handler {
         // Set series index (track number)
         if let Some(idx) = metadata.series_index {
             let total = metadata.total_tracks.unwrap_or(0);
+            // Saturate f32 -> u16 (standard behavior)
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            tag.set_track(idx as u16, total as u16);
+            let track_num = idx as u16;
+            // Clamp u32 -> u16 to avoid wrapping
+            #[allow(clippy::cast_possible_truncation)]
+            let track_total = total.min(u32::from(u16::MAX)) as u16;
+            tag.set_track(track_num, track_total);
         }
 
         // Set genre (©gen)

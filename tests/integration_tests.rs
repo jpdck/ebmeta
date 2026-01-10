@@ -4,124 +4,6 @@ use ebmeta::epub::EpubMetadataManager;
 use serde::Deserialize;
 use std::path::PathBuf;
 
-#[test]
-fn test_read_real_epub() {
-    let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    path.push("tests/media");
-    path.push("CameronCooper-SolarWhisper.epub");
-
-    let manager = EpubMetadataManager;
-    assert!(manager.can_handle(&path));
-
-    let metadata = manager.read(&path).expect("Failed to read metadata");
-
-    // Check expected values based on the file name/content
-    // Cameron Cooper - Solar Whisper
-    assert!(metadata.title.is_some());
-    // Note: We can add more specific assertions if we knew the content, but for now we ensure it parses successfully.
-    if let Some(title) = &metadata.title {
-        assert!(!title.is_empty());
-    }
-}
-
-#[test]
-#[allow(clippy::permissions_set_readonly_false)]
-#[allow(clippy::disallowed_macros)]
-fn test_write_epub_metadata() {
-    let mut src_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    src_path.push("tests/media");
-    src_path.push("CameronCooper-SolarWhisper.epub");
-
-    let mut dest_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    dest_path.push("tests/media");
-    dest_path.push("output_test.epub");
-
-    // Copy file to avoid modifying the original test file
-    std::fs::copy(&src_path, &dest_path).expect("Failed to copy test epub");
-
-    // Ensure writable
-    let mut perms = std::fs::metadata(&dest_path)
-        .expect("Failed to get metadata")
-        .permissions();
-    perms.set_readonly(false);
-    std::fs::set_permissions(&dest_path, perms).expect("Failed to set permissions");
-
-    let manager = EpubMetadataManager;
-
-    // 1. Read
-    let mut metadata = manager.read(&dest_path).expect("Failed to read metadata");
-
-    // 2. Modify
-    let new_title = "Modified Title".to_string();
-    let new_author = "New Author".to_string();
-    metadata.title = Some(new_title.clone());
-    metadata.authors.push(new_author.clone());
-
-    // 3. Write
-    manager
-        .write(&dest_path, &metadata)
-        .expect("Failed to write metadata");
-
-    // 4. Verify
-    let new_metadata = manager
-        .read(&dest_path)
-        .expect("Failed to read new metadata");
-    assert_eq!(new_metadata.title, Some(new_title));
-    assert!(new_metadata.authors.contains(&new_author));
-
-    // Cleanup
-    if let Err(e) = std::fs::remove_file(&dest_path) {
-        eprintln!("Warning: failed to remove test file {dest_path:?}: {e}");
-    }
-}
-
-#[test]
-#[allow(clippy::permissions_set_readonly_false)]
-#[allow(clippy::disallowed_macros)]
-fn test_write_cover_image() {
-    let mut src_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    src_path.push("tests/media");
-    src_path.push("CameronCooper-SolarWhisper.epub");
-
-    let mut dest_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    dest_path.push("tests/media");
-    dest_path.push("output_cover_test.epub");
-
-    std::fs::copy(&src_path, &dest_path).expect("Failed to copy test epub");
-
-    // Ensure writable
-    let mut perms = std::fs::metadata(&dest_path)
-        .expect("Failed to get metadata")
-        .permissions();
-    perms.set_readonly(false);
-    std::fs::set_permissions(&dest_path, perms).expect("Failed to set permissions");
-
-    let manager = EpubMetadataManager;
-
-    // Create dummy cover image
-    let dummy_content = vec![0x1, 0x2, 0x3, 0x4]; // Not real JPEG but sufficient for test
-    let cover = CoverImage {
-        content: dummy_content.clone(),
-        media_type: "image/jpeg".to_string(),
-    };
-
-    let mut metadata = manager.read(&dest_path).expect("Read failed");
-    metadata.cover_image = Some(cover);
-
-    manager.write(&dest_path, &metadata).expect("Write failed");
-
-    // Read back via metadata reader (reference only; no bytes)
-    let new_metadata = manager.read(&dest_path).expect("Failed to read metadata");
-    let cover = new_metadata
-        .cover_image_ref
-        .expect("Cover image ref missing from metadata");
-    assert_eq!(cover.media_type, "image/jpeg");
-
-    if let Err(e) = std::fs::remove_file(&dest_path) {
-        eprintln!("Warning: failed to remove test file {dest_path:?}: {e}");
-    }
-}
-
 #[derive(Debug, Deserialize)]
 struct FixtureChapter {
     start: f64,
@@ -153,18 +35,85 @@ fn read_fixture(path: &PathBuf) -> FixtureMetadata {
     serde_json::from_slice(&bytes).expect("Failed to parse fixture JSON")
 }
 
-#[allow(clippy::permissions_set_readonly_false)]
-fn set_writable(path: &PathBuf) {
-    let mut perms = std::fs::metadata(path)
-        .expect("Failed to get metadata")
-        .permissions();
-    perms.set_readonly(false);
-    std::fs::set_permissions(path, perms).expect("Failed to set permissions");
-}
-
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn seconds_to_ms(seconds: f64) -> u64 {
     (seconds * 1000.0).round() as u64
+}
+
+#[test]
+fn test_read_real_epub() {
+    let path = fixture_path("tests/media/CameronCooper-SolarWhisper.epub");
+    let manager = EpubMetadataManager;
+
+    assert!(manager.can_handle(&path));
+    let metadata = manager.read(&path).expect("Failed to read metadata");
+
+    // Strengthened assertions
+    assert_eq!(metadata.title.as_deref(), Some("Solar Whisper"));
+    assert!(metadata.authors.contains(&"Cameron Cooper".to_string()));
+    assert_eq!(metadata.language.as_deref(), Some("en"));
+}
+
+#[test]
+fn test_write_epub_metadata() {
+    let src_path = fixture_path("tests/media/CameronCooper-SolarWhisper.epub");
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+    let dest_path = temp_dir.path().join("output_test.epub");
+
+    std::fs::copy(&src_path, &dest_path).expect("Failed to copy test epub");
+
+    let manager = EpubMetadataManager;
+
+    // 1. Read
+    let mut metadata = manager.read(&dest_path).expect("Failed to read metadata");
+
+    // 2. Modify
+    let new_title = "Modified Title".to_string();
+    let new_author = "New Author".to_string();
+    metadata.title = Some(new_title.clone());
+    metadata.authors.push(new_author.clone());
+
+    // 3. Write
+    manager
+        .write(&dest_path, &metadata)
+        .expect("Failed to write metadata");
+
+    // 4. Verify
+    let new_metadata = manager
+        .read(&dest_path)
+        .expect("Failed to read new metadata");
+    assert_eq!(new_metadata.title, Some(new_title));
+    assert!(new_metadata.authors.contains(&new_author));
+}
+
+#[test]
+fn test_write_cover_image() {
+    let src_path = fixture_path("tests/media/CameronCooper-SolarWhisper.epub");
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+    let dest_path = temp_dir.path().join("output_cover_test.epub");
+
+    std::fs::copy(&src_path, &dest_path).expect("Failed to copy test epub");
+
+    let manager = EpubMetadataManager;
+
+    // Create dummy cover image
+    let dummy_content = vec![0x1, 0x2, 0x3, 0x4];
+    let cover = CoverImage {
+        content: dummy_content.clone(),
+        media_type: "image/jpeg".to_string(),
+    };
+
+    let mut metadata = manager.read(&dest_path).expect("Read failed");
+    metadata.cover_image = Some(cover);
+
+    manager.write(&dest_path, &metadata).expect("Write failed");
+
+    // Read back
+    let new_metadata = manager.read(&dest_path).expect("Failed to read metadata");
+    let cover_ref = new_metadata
+        .cover_image_ref
+        .expect("Cover image ref missing from metadata");
+    assert_eq!(cover_ref.media_type, "image/jpeg");
 }
 
 #[test]
@@ -188,8 +137,6 @@ fn test_read_real_m4b_matches_fixture_subset() {
         assert!(metadata.narrators.contains(n));
     }
 
-    // Publisher/language/tags are supported by the public metadata model but may not be present
-    // in every source file, so we only assert them when the reader provides values.
     if let Some(publisher) = &metadata.publisher {
         assert!(fixture.publisher.as_ref().is_some_and(|p| p == publisher));
     }
@@ -202,7 +149,6 @@ fn test_read_real_m4b_matches_fixture_subset() {
         }
     }
 
-    // Chapters are optional depending on container support.
     if !metadata.chapters.is_empty() {
         assert_eq!(metadata.chapters.len(), fixture.chapters.len());
         if let (Some(ch0), Some(f0)) = (metadata.chapters.first(), fixture.chapters.first()) {
@@ -263,17 +209,16 @@ fn test_read_real_mp3_matches_fixture_subset() {
 }
 
 #[test]
-#[allow(clippy::permissions_set_readonly_false)]
-#[allow(clippy::disallowed_macros)]
 fn test_write_m4b_roundtrip_basic_fields() {
     let manager = AudioMetadataManager::new();
 
     let src_path = fixture_path("tests/media/SINGLE_M4B/The_Science_of_Sci-Fi.m4b");
     let cover_path = fixture_path("tests/media/SINGLE_M4B/cover.jpg");
 
-    let dest_path = fixture_path("tests/media/output_audio_test.m4b");
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+    let dest_path = temp_dir.path().join("output_audio_test.m4b");
+
     std::fs::copy(&src_path, &dest_path).expect("Failed to copy test m4b");
-    set_writable(&dest_path);
 
     let mut metadata = manager.read(&dest_path).expect("Read failed");
 
@@ -308,23 +253,17 @@ fn test_write_m4b_roundtrip_basic_fields() {
     if let Some(cover_ref) = new_metadata.cover_image_ref {
         assert_eq!(cover_ref.media_type, "image/jpeg");
     }
-
-    if let Err(e) = std::fs::remove_file(&dest_path) {
-        eprintln!("Warning: failed to remove test file {dest_path:?}: {e}");
-    }
 }
 
 #[test]
-#[allow(clippy::permissions_set_readonly_false)]
-#[allow(clippy::disallowed_macros)]
 fn test_write_mp3_roundtrip_basic_fields() {
     let manager = AudioMetadataManager::new();
 
     let src_path = fixture_path("tests/media/MULT_MP3/Devolution-Part01.mp3");
-    let dest_path = fixture_path("tests/media/output_audio_test.mp3");
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+    let dest_path = temp_dir.path().join("output_audio_test.mp3");
 
     std::fs::copy(&src_path, &dest_path).expect("Failed to copy test mp3");
-    set_writable(&dest_path);
 
     let mut metadata = manager.read(&dest_path).expect("Read failed");
 
@@ -347,10 +286,6 @@ fn test_write_mp3_roundtrip_basic_fields() {
     if !new_metadata.tags.is_empty() {
         assert!(new_metadata.tags.contains(&"TestTag".to_string()));
     }
-
-    if let Err(e) = std::fs::remove_file(&dest_path) {
-        eprintln!("Warning: failed to remove test file {dest_path:?}: {e}");
-    }
 }
 
 #[test]
@@ -361,4 +296,161 @@ fn test_audio_manager_rejects_unsupported_paths() {
     assert!(!manager.can_handle(&txt_path));
 
     assert!(manager.read(&txt_path).is_err());
+}
+
+// --- New Tests ---
+
+#[test]
+fn epub_read_empty_file_returns_error() {
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+    let path = temp_dir.path().join("empty.epub");
+    std::fs::write(&path, b"").unwrap();
+
+    let result = EpubMetadataManager.read(&path);
+    assert!(result.is_err());
+    let msg = format!("{:?}", result.err());
+    // Zip error usually
+    assert!(
+        msg.to_lowercase().contains("zip")
+            || msg.to_lowercase().contains("invalid")
+            || msg.to_lowercase().contains("error")
+    );
+}
+
+#[test]
+fn epub_read_truncated_zip_returns_error() {
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+    let path = temp_dir.path().join("truncated.epub");
+    // Valid ZIP header, truncated before central directory
+    std::fs::write(&path, [0x50, 0x4B, 0x03, 0x04, 0x00]).unwrap();
+
+    let result = EpubMetadataManager.read(&path);
+    assert!(result.is_err());
+}
+
+#[test]
+fn epub_roundtrip_preserves_all_fields() {
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+    let src = fixture_path("tests/media/CameronCooper-SolarWhisper.epub");
+    let dest = temp_dir.path().join("roundtrip.epub");
+    std::fs::copy(&src, &dest).unwrap();
+
+    let manager = EpubMetadataManager;
+    let original = manager.read(&dest).unwrap();
+    manager.write(&dest, &original).unwrap();
+    let after = manager.read(&dest).unwrap();
+
+    assert_eq!(original.title, after.title);
+    assert_eq!(original.authors, after.authors);
+    assert_eq!(original.series, after.series);
+    assert_eq!(original.isbn, after.isbn);
+    // Cover ref should survive
+    assert_eq!(
+        original.cover_image_ref.as_ref().map(|c| &c.media_type),
+        after.cover_image_ref.as_ref().map(|c| &c.media_type)
+    );
+}
+
+#[test]
+fn epub_read_does_not_panic_on_bad_inputs() {
+    let cases: &[(&str, &[u8])] = &[
+        ("empty", &[]),
+        ("random_bytes", &[0xDE, 0xAD, 0xBE, 0xEF]),
+        ("zip_header_only", &[0x50, 0x4B, 0x03, 0x04]),
+        ("pdf_magic", b"%PDF-1.4"),
+        ("null_bytes", &[0u8; 1024]),
+    ];
+
+    for (name, bytes) in cases {
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let path = temp_dir.path().join(format!("{name}.epub"));
+        std::fs::write(&path, bytes).unwrap();
+
+        // Must not panic, error is acceptable
+        let _ = EpubMetadataManager.read(&path);
+    }
+}
+
+#[test]
+fn mp3_read_no_id3_returns_usable_metadata_or_error() {
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+    let path = temp_dir.path().join("no_tag.mp3");
+    // Minimal MP3 frame sync, no ID3
+    std::fs::write(&path, [0xFF, 0xFB, 0x90, 0x00]).unwrap();
+
+    let manager = AudioMetadataManager::new();
+    let result = manager.read(&path);
+    // Either returns empty metadata or clean error, not panic
+    match result {
+        Ok(meta) => assert!(meta.title.is_none()),
+        Err(e) => assert!(!format!("{e:?}").contains("panic")),
+    }
+}
+
+#[test]
+fn m4b_write_clamps_large_track_numbers() {
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+    let src = fixture_path("tests/media/SINGLE_M4B/The_Science_of_Sci-Fi.m4b");
+    let dest = temp_dir.path().join("overflow.m4b");
+    std::fs::copy(&src, &dest).unwrap();
+
+    let manager = AudioMetadataManager::new();
+    let mut meta = manager.read(&dest).unwrap();
+
+    // Values larger than u16::MAX (65535)
+    meta.total_tracks = Some(100_000);
+    meta.series_index = Some(100_000.0);
+
+    manager
+        .write(&dest, &meta)
+        .expect("Write should succeed with clamping");
+
+    let readback = manager.read(&dest).unwrap();
+    // Should be clamped to 65535, NOT truncated to 34464
+    assert_eq!(readback.total_tracks, Some(65535));
+    assert_eq!(readback.series_index, Some(65535.0));
+}
+
+#[test]
+fn mp3_handles_large_track_numbers() {
+    let manager = AudioMetadataManager::new();
+
+    let src_path = fixture_path("tests/media/MULT_MP3/Devolution-Part01.mp3");
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+    let dest_path = temp_dir.path().join("output_mp3_large_track.mp3");
+
+    std::fs::copy(&src_path, &dest_path).expect("Failed to copy test mp3");
+
+    let mut metadata = manager.read(&dest_path).expect("Read failed");
+
+    // MP3 (ID3v2.4) frames can handle large numbers (text based), though TRCK is often numeric.
+    // ID3 crate usually handles u32.
+    metadata.series_index = Some(65535.0);
+    metadata.total_tracks = Some(65535);
+
+    manager.write(&dest_path, &metadata).expect("Write failed");
+
+    let new_metadata = manager.read(&dest_path).expect("Re-read failed");
+
+    if let Some(idx) = new_metadata.series_index {
+        assert!((idx - 65535.0).abs() < 1.0, "MP3 should handle u16::MAX");
+    }
+}
+
+#[test]
+fn epub_error_messages_are_user_friendly() {
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+    let path = temp_dir.path().join("nonexistent.epub");
+
+    let err = EpubMetadataManager.read(&path).unwrap_err();
+    let msg = format!("{err}");
+
+    assert!(!msg.contains("unwrap()"));
+    assert!(!msg.contains("called `Option::unwrap()`"));
+    assert!(
+        msg.to_lowercase().contains("file")
+            || msg.to_lowercase().contains("open")
+            || msg.to_lowercase().contains("no such")
+            || msg.to_lowercase().contains("found")
+    );
 }

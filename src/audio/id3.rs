@@ -247,3 +247,168 @@ fn write_cover(tag: &mut Tag, cover: &CoverImage) {
 
     tag.add_frame(picture);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use id3::frame::{Content, Frame, Popularimeter};
+
+    #[test]
+    fn test_rating_conversion_boundary_values() {
+        // Test 0-255 → 0-100 conversion at boundary values
+
+        let mut tag = Tag::new();
+
+        // Test rating = 0
+        let popm_0 = Popularimeter {
+            user: String::new(),
+            rating: 0,
+            counter: 0,
+        };
+        tag.add_frame(Frame::with_content("POPM", Content::Popularimeter(popm_0)));
+        assert_eq!(extract_rating(&tag), Some(0));
+
+        // Test rating = 255
+        let mut tag = Tag::new();
+        let popm_255 = Popularimeter {
+            user: String::new(),
+            rating: 255,
+            counter: 0,
+        };
+        tag.add_frame(Frame::with_content(
+            "POPM",
+            Content::Popularimeter(popm_255),
+        ));
+        assert_eq!(extract_rating(&tag), Some(100));
+
+        // Test rating = 127 (middle value)
+        let mut tag = Tag::new();
+        let popm_127 = Popularimeter {
+            user: String::new(),
+            rating: 127,
+            counter: 0,
+        };
+        tag.add_frame(Frame::with_content(
+            "POPM",
+            Content::Popularimeter(popm_127),
+        ));
+        let result = extract_rating(&tag).expect("Should have rating");
+        assert!((49..=50).contains(&result)); // 127 * 100 / 255 ≈ 49.8
+    }
+
+    #[test]
+    fn test_rating_write_boundary_values() {
+        // Test 0-100 → 0-255 conversion at boundary values
+        let mut tag = Tag::new();
+
+        // Test rating = 0
+        write_rating(&mut tag, 0);
+        let frame = tag.get("POPM").expect("Should have POPM frame");
+        if let Content::Popularimeter(popm) = frame.content() {
+            assert_eq!(popm.rating, 0);
+        } else {
+            panic!("Expected Popularimeter content");
+        }
+
+        // Test rating = 100
+        let mut tag = Tag::new();
+        write_rating(&mut tag, 100);
+        let frame = tag.get("POPM").expect("Should have POPM frame");
+        if let Content::Popularimeter(popm) = frame.content() {
+            assert_eq!(popm.rating, 255);
+        } else {
+            panic!("Expected Popularimeter content");
+        }
+
+        // Test rating = 50
+        let mut tag = Tag::new();
+        write_rating(&mut tag, 50);
+        let frame = tag.get("POPM").expect("Should have POPM frame");
+        if let Content::Popularimeter(popm) = frame.content() {
+            assert!(popm.rating >= 127 && popm.rating <= 128); // 50 * 255 / 100 = 127.5
+        } else {
+            panic!("Expected Popularimeter content");
+        }
+    }
+
+    #[test]
+    fn test_rating_round_trip_approximation() {
+        // Test that read(write(x)) ≈ x for key values
+        // Due to rounding, we can't expect exact equality for all values
+
+        for original in [0, 25, 50, 75, 100] {
+            let mut tag = Tag::new();
+            write_rating(&mut tag, original);
+            let read_back = extract_rating(&tag).expect("Should read rating back");
+
+            // Allow ±1 for rounding errors
+            let diff = read_back.abs_diff(original);
+            assert!(
+                diff <= 1,
+                "Rating {original} became {read_back} after round-trip (diff={diff})"
+            );
+        }
+    }
+
+    #[test]
+    fn test_extract_authors_handles_empty_strings() {
+        let mut tag = Tag::new();
+
+        // Test empty string after split
+        tag.set_artist("Author1;;Author2");
+        let authors = extract_authors(&tag);
+        assert_eq!(authors, vec!["Author1", "Author2"]);
+        assert!(!authors.contains(&String::new()));
+
+        // Test leading/trailing semicolons
+        let mut tag = Tag::new();
+        tag.set_artist(";Author1;Author2;");
+        let authors = extract_authors(&tag);
+        assert_eq!(authors, vec!["Author1", "Author2"]);
+
+        // Test only semicolons
+        let mut tag = Tag::new();
+        tag.set_artist(";;;");
+        let authors = extract_authors(&tag);
+        assert!(authors.is_empty());
+
+        // Test normal case
+        let mut tag = Tag::new();
+        tag.set_artist("Author1; Author2 ; Author3");
+        let authors = extract_authors(&tag);
+        assert_eq!(authors, vec!["Author1", "Author2", "Author3"]);
+    }
+
+    #[test]
+    fn test_extract_narrators_handles_empty_strings() {
+        let mut tag = Tag::new();
+
+        // Test empty string after split
+        tag.set_album_artist("Narrator1;;Narrator2");
+        let narrators = extract_narrators(&tag);
+        assert_eq!(narrators, vec!["Narrator1", "Narrator2"]);
+        assert!(!narrators.contains(&String::new()));
+
+        // Test leading/trailing semicolons
+        let mut tag = Tag::new();
+        tag.set_album_artist(";Narrator1;");
+        let narrators = extract_narrators(&tag);
+        assert_eq!(narrators, vec!["Narrator1"]);
+
+        // Test only semicolons
+        let mut tag = Tag::new();
+        tag.set_album_artist(";");
+        let narrators = extract_narrators(&tag);
+        assert!(narrators.is_empty());
+    }
+
+    #[test]
+    fn test_extract_year_number() {
+        assert_eq!(extract_year_number("2023"), Some(2023));
+        assert_eq!(extract_year_number("2023-01-15"), Some(2023));
+        assert_eq!(extract_year_number("2023-12-31T23:59:59"), Some(2023));
+        assert_eq!(extract_year_number("abc"), None);
+        assert_eq!(extract_year_number(""), None);
+        assert_eq!(extract_year_number("202"), None);
+    }
+}
