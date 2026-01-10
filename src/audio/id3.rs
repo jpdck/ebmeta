@@ -123,6 +123,17 @@ impl MetadataIo for Id3Handler {
             write_rating(&mut tag, rating);
         }
 
+        // Set tags (TXXX - User defined text with description "KEYWORDS")
+        // First remove all existing KEYWORDS frames
+        tag.remove_extended_text(Some("KEYWORDS"), None);
+        if !metadata.tags.is_empty() {
+            use id3::frame::ExtendedText;
+            tag.add_frame(ExtendedText {
+                description: "KEYWORDS".to_string(),
+                value: metadata.tags.join("; "),
+            });
+        }
+
         // Set cover image (APIC)
         if let Some(cover) = &metadata.cover_image {
             write_cover(&mut tag, cover);
@@ -195,9 +206,16 @@ fn extract_rating(tag: &Tag) -> Option<u8> {
     })
 }
 
-fn extract_tags(_tag: &Tag) -> Vec<String> {
-    // ID3 doesn't have a standard "tags" field, could use TXXX (user-defined text)
-    Vec::new()
+fn extract_tags(tag: &Tag) -> Vec<String> {
+    tag.extended_texts()
+        .filter(|ext| ext.description.eq_ignore_ascii_case("KEYWORDS"))
+        .flat_map(|ext| {
+            ext.value
+                .split(';')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        })
+        .collect()
 }
 
 fn extract_cover(tag: &Tag) -> Option<CoverImage> {
