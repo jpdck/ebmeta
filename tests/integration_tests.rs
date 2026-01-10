@@ -438,15 +438,34 @@ fn epub_write_preserves_unmodified_fields() {
 
 #[test]
 fn epub_write_to_readonly_location_returns_error() {
+    use std::fs::{self, File};
+    use std::io::Write;
+
     let manager = EpubMetadataManager;
-    // Attempt to write to a location that should fail (root on Unix systems)
-    let invalid_path = Path::new("/root/readonly_test.epub");
+
+    // Create a temporary file and make it readonly
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+    let readonly_path = temp_dir.path().join("readonly_test.epub");
+
+    // Create a minimal valid EPUB first
+    {
+        let mut file = File::create(&readonly_path).expect("Failed to create temp file");
+        // Write minimal zip structure
+        file.write_all(b"PK\x03\x04").expect("Failed to write");
+    }
+
+    // Make the file readonly
+    let mut perms = fs::metadata(&readonly_path)
+        .expect("Failed to get metadata")
+        .permissions();
+    perms.set_readonly(true);
+    fs::set_permissions(&readonly_path, perms).expect("Failed to set readonly");
 
     let metadata = Metadata::default();
-    let result = manager.write(invalid_path, &metadata);
+    let result = manager.write(&readonly_path, &metadata);
 
-    // Contract: write to inaccessible location must return error
-    assert!(result.is_err(), "Writing to readonly location must fail");
+    // Contract: write to readonly location must return error
+    assert!(result.is_err(), "Writing to readonly file must fail");
 }
 
 // ============================================================================

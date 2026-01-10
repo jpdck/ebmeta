@@ -148,6 +148,10 @@ fn write_flac(path: &Path, metadata: &Metadata) -> Result<()> {
     // Set cover image (PICTURE block)
     if let Some(cover) = &metadata.cover_image {
         write_flac_picture(&mut tag, cover);
+    } else {
+        // Remove all existing PICTURE blocks if no cover image is provided
+        use metaflac::block::PictureType;
+        tag.remove_picture_type(PictureType::CoverFront);
     }
 
     tag.write_to_path(path)

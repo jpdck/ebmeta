@@ -83,16 +83,33 @@ impl MetadataIo for Mp4Handler {
             tag.remove_album();
         }
 
-        // Set series index (track number)
-        if let Some(idx) = metadata.series_index {
-            let total = metadata.total_tracks.unwrap_or(0);
+        // Set series index / total tracks (track number / track total)
+        // MP4 couples track number and total tracks; they must be written together.
+        // If either `series_index` or `total_tracks` is provided, write both, using
+        // existing tag values for whichever field is not being updated.
+        if metadata.series_index.is_some() || metadata.total_tracks.is_some() {
+            let existing_num = tag.track_number();
+            let existing_total = tag.total_tracks();
+
             // Saturate f32 -> u16 (standard behavior)
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let track_num = idx as u16;
+            let track_num: u16 = metadata
+                .series_index
+                .map(|idx| idx as u16)
+                .or(existing_num)
+                .unwrap_or(0);
+
             // Clamp u32 -> u16 to avoid wrapping
             #[allow(clippy::cast_possible_truncation)]
-            let track_total = total.min(u32::from(u16::MAX)) as u16;
+            let track_total: u16 = metadata
+                .total_tracks
+                .map(|total| total.min(u32::from(u16::MAX)) as u16)
+                .or(existing_total)
+                .unwrap_or(0);
+
             tag.set_track(track_num, track_total);
+        } else {
+            tag.remove_track();
         }
 
         // Set genre (©gen)
@@ -126,6 +143,8 @@ impl MetadataIo for Mp4Handler {
         // Set cover image (covr)
         if let Some(cover) = &metadata.cover_image {
             write_cover(&mut tag, cover);
+        } else {
+            tag.remove_artworks();
         }
 
         tag.write_to_path(path)

@@ -94,12 +94,18 @@ impl MetadataIo for Id3Handler {
         if let Some(date) = &metadata.published_date {
             if let Some(year) = extract_year_number(date) {
                 tag.set_year(year);
+            } else {
+                tag.remove_year();
             }
+        } else {
+            tag.remove_year();
         }
 
         // Set total tracks
         if let Some(total) = metadata.total_tracks {
             tag.set_total_tracks(total);
+        } else {
+            tag.remove_total_tracks();
         }
 
         // Set description (COMM - Comments)
@@ -125,6 +131,9 @@ impl MetadataIo for Id3Handler {
         // Set rating (POPM - Popularimeter)
         if let Some(rating) = metadata.rating {
             write_rating(&mut tag, rating);
+        } else {
+            // Remove existing rating frame when no rating is provided
+            tag.remove("POPM");
         }
 
         // Set tags (TXXX - User defined text with description "KEYWORDS")
@@ -141,6 +150,9 @@ impl MetadataIo for Id3Handler {
         // Set cover image (APIC)
         if let Some(cover) = &metadata.cover_image {
             write_cover(&mut tag, cover);
+        } else {
+            // Remove existing cover images when no cover is provided
+            tag.remove("APIC");
         }
 
         tag.write_to_path(path, id3::Version::Id3v24)
