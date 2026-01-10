@@ -7,10 +7,7 @@ pub struct VorbisHandler;
 
 impl MetadataIo for VorbisHandler {
     fn can_handle(&self, path: &Path) -> bool {
-        matches!(
-            path.extension().and_then(|e| e.to_str()),
-            Some("flac" | "ogg" | "opus")
-        )
+        matches!(path.extension().and_then(|e| e.to_str()), Some("flac"))
     }
 
     fn read(&self, path: &Path) -> Result<Metadata> {

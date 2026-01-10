@@ -29,7 +29,7 @@ impl std::error::Error for Error {}
 pub type Result<T> = result::Result<T, Error>;
 
 /// Audiobook classification
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AudiobookType {
     Fiction,
     Nonfiction,
@@ -42,7 +42,7 @@ pub enum AudiobookType {
 /// - Primary narrator(s) in `Metadata.narrators`
 /// - Additional/guest narrators as `Contributor` with `ContributorRole::Narrator`
 /// - Editors, producers, translators, etc. as `Contributor` with their respective roles
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Contributor {
     pub name: String,
     pub role: ContributorRole,
@@ -54,7 +54,7 @@ pub struct Contributor {
 /// primary narrator(s) listed in `Metadata.narrators`. For example:
 /// - `Metadata.narrators`: `["John Doe"]` (primary narrator)
 /// - `Metadata.contributors`: `[Contributor { name: "Jane Smith", role: Narrator }]` (guest narrator for chapter 5)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContributorRole {
     /// Additional/guest narrator (not the primary narrator)
     Narrator,
@@ -65,7 +65,7 @@ pub enum ContributorRole {
 }
 
 /// Chapter marker with timestamps
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Chapter {
     pub title: String,
     /// Start time in milliseconds from beginning
